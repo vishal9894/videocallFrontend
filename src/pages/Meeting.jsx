@@ -505,105 +505,16 @@ export default function Meeting() {
             <div className="flex items-center gap-2 mt-2">
               <span className="text-gray-300">Room:</span>
               <span className="bg-gray-800 px-3 py-1 rounded-lg font-mono">{id}</span>
-              <div className={`ml-2 px-2 py-1 rounded text-xs ${
-                connectionStatus === 'connected' ? 'bg-green-600' :
-                connectionStatus === 'connecting' ? 'bg-yellow-600' :
-                connectionStatus === 'reconnecting' ? 'bg-yellow-600' :
-                'bg-red-600'
-              }`}>
-                {connectionStatus === 'connected' ? '🟢 Connected' :
-                 connectionStatus === 'connecting' ? '🟡 Connecting' :
-                 connectionStatus === 'reconnecting' ? '🟡 Reconnecting' :
-                 '🔴 Disconnected'}
-              </div>
+              
             </div>
           </div>
           
-          <div className="flex items-center gap-4">
-            <div className="text-white bg-gray-800 px-4 py-2 rounded-lg">
-              <span className="text-gray-300">Participants:</span>{" "}
-              <span className="font-bold">{roomUsers.length + 1}</span>
-            </div>
-            <button 
-              onClick={debugInfo}
-              className="bg-gray-700 text-white px-4 py-2 rounded-lg hover:bg-gray-600 text-sm"
-            >
-              Debug
-            </button>
-            <button 
-              onClick={reconnect}
-              className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 text-sm"
-            >
-              Reconnect
-            </button>
-            <button 
-              onClick={refreshPage}
-              className="bg-yellow-600 text-white px-4 py-2 rounded-lg hover:bg-yellow-700 text-sm"
-            >
-              Refresh
-            </button>
-          </div>
+         
         </div>
         
-        {/* Logs Panel */}
-        <div className="mb-4 bg-gray-800/50 rounded-lg p-3 max-h-32 overflow-y-auto">
-          <div className="flex justify-between items-center mb-2">
-            <div className="text-gray-400 text-sm">Connection Logs:</div>
-            <div className="flex gap-2">
-              <button 
-                onClick={() => setLogs([])}
-                className="text-xs bg-gray-700 hover:bg-gray-600 text-white px-2 py-1 rounded"
-              >
-                Clear
-              </button>
-              <span className="text-xs text-gray-400">
-                {connected ? '🟢' : '🔴'} {socketRef.current?.id?.slice(-6) || '...'}
-              </span>
-            </div>
-          </div>
-          {logs.map((log, index) => (
-            <div key={index} className="text-gray-300 text-xs font-mono truncate">
-              {log}
-            </div>
-          ))}
-        </div>
+       
         
-        {/* Loading */}
-        {isLoading && (
-          <div className="flex flex-col items-center justify-center h-64 rounded-xl bg-gray-800/50 mb-8">
-            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mb-4"></div>
-            <p className="text-gray-400">Initializing video call...</p>
-            <p className="text-gray-500 text-sm mt-2">Please allow camera/microphone access</p>
-          </div>
-        )}
-        
-        {/* Connection Error */}
-        {!connected && !isLoading && (
-          <div className="mb-4 p-4 bg-red-900/50 border border-red-700 rounded-lg">
-            <div className="flex items-center gap-3">
-              <div className="text-2xl">⚠️</div>
-              <div>
-                <p className="text-red-200 font-medium">Connection lost</p>
-                <p className="text-red-300 text-sm mt-1">Trying to reconnect... ({reconnectAttempts.current}/{maxReconnectAttempts})</p>
-                <div className="flex gap-2 mt-3">
-                  <button 
-                    onClick={reconnect}
-                    className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded text-sm"
-                  >
-                    Reconnect Now
-                  </button>
-                  <button 
-                    onClick={refreshPage}
-                    className="bg-gray-700 hover:bg-gray-600 text-white px-4 py-2 rounded text-sm"
-                  >
-                    Refresh Page
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-        
+       
         {/* Video Grid */}
         {!isLoading && (
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 mb-8">
