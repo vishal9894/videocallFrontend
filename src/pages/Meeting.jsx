@@ -11,19 +11,18 @@ import {
   Users,
   Copy,
   ScreenShare,
-  Maximize2,
   Settings,
-  MessageCircle,
-  MoreVertical,
-  Grid3x3,
   User,
-  Layout,
   ChevronLeft,
-  ChevronRight,
   Bell,
   Shield,
   Wifi,
-  WifiOff
+  WifiOff,
+  Volume2,
+  Crown,
+  Sparkles,
+  Grid3x3,
+  LayoutGrid
 } from "lucide-react";
 
 const BASE_URL = import.meta.env.VITE_API_URL;
@@ -33,6 +32,7 @@ export default function Meeting() {
   const navigate = useNavigate();
   
   const localVideo = useRef(null);
+  const remoteVideosRef = useRef({});
   const peerConnections = useRef({});
   const socketRef = useRef(null);
   const localStreamRef = useRef(null);
@@ -46,9 +46,10 @@ export default function Meeting() {
   const [participants, setParticipants] = useState(1);
   const [showSettings, setShowSettings] = useState(false);
   const [showParticipants, setShowParticipants] = useState(false);
-  const [videoLayout, setVideoLayout] = useState("grid");
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
   const [showControls, setShowControls] = useState(true);
+  const [activeSpeaker, setActiveSpeaker] = useState(null);
+  const [videoLayout, setVideoLayout] = useState("grid"); // grid, sideBySide, spotlight
 
   // Detect mobile
   useEffect(() => {
@@ -106,7 +107,8 @@ export default function Meeting() {
           video: { 
             width: { ideal: isMobile ? 640 : 1280 },
             height: { ideal: isMobile ? 480 : 720 },
-            frameRate: { ideal: 24 }
+            frameRate: { ideal: 24 },
+            facingMode: "user"
           },
           audio: {
             echoCancellation: true,
@@ -145,6 +147,7 @@ export default function Meeting() {
     socket.on("user-left", (userId) => {
       console.log("👋 User left:", userId);
       setParticipants(prev => Math.max(1, prev - 1));
+      if (activeSpeaker === userId) setActiveSpeaker(null);
       if (peerConnections.current[userId]) {
         peerConnections.current[userId].close();
         delete peerConnections.current[userId];
@@ -268,15 +271,21 @@ export default function Meeting() {
   
   const toggleMute = () => {
     if (localStreamRef.current) {
-      localStreamRef.current.getAudioTracks()[0].enabled = !muted;
-      setMuted(!muted);
+      const audioTrack = localStreamRef.current.getAudioTracks()[0];
+      if (audioTrack) {
+        audioTrack.enabled = !muted;
+        setMuted(!muted);
+      }
     }
   };
   
   const toggleCamera = () => {
     if (localStreamRef.current) {
-      localStreamRef.current.getVideoTracks()[0].enabled = !cameraOff;
-      setCameraOff(!cameraOff);
+      const videoTrack = localStreamRef.current.getVideoTracks()[0];
+      if (videoTrack) {
+        videoTrack.enabled = !cameraOff;
+        setCameraOff(!cameraOff);
+      }
     }
   };
   
@@ -290,7 +299,11 @@ export default function Meeting() {
         setScreenSharing(false);
       } else {
         const screenStream = await navigator.mediaDevices.getDisplayMedia({
-          video: true
+          video: {
+            frameRate: { ideal: 30 },
+            width: { max: 1920 },
+            height: { max: 1080 }
+          }
         });
         screenStreamRef.current = screenStream;
         localVideo.current.srcObject = screenStream;
@@ -328,271 +341,310 @@ export default function Meeting() {
     window.location.reload();
   };
 
-  // Mobile optimized video grid
-  const getVideoLayout = () => {
-    if (isMobile) {
-      return "vertical";
+  const renderVideoLayout = () => {
+    const peerCount = Object.keys(peers).length;
+    const totalParticipants = peerCount + 1; // local + remote peers
+
+    if (totalParticipants === 0) return null;
+
+    // For 2 participants: Show side by side
+    if (totalParticipants === 2 && !isMobile) {
+      return (
+        <div className="flex-1 flex flex-col md:flex-row gap-4 md:gap-6 p-4">
+          {/* Local Video */}
+          <div className="flex-1 relative group">
+            <div className="h-full bg-gray-900 rounded-2xl overflow-hidden shadow-2xl">
+              <video 
+                ref={localVideo} 
+                autoPlay 
+                muted 
+                playsInline
+                className="w-full h-full object-cover"
+              />
+              <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent">
+                <div className="absolute top-4 left-4 flex items-center gap-2 bg-black/60 backdrop-blur-sm px-3 py-1.5 rounded-full">
+                  <Crown size={16} className="text-amber-400" />
+                  <span className="font-medium text-sm">You (Host)</span>
+                  {muted && <MicOff size={14} className="text-rose-400 ml-2" />}
+                  {cameraOff && <VideoOff size={14} className="text-rose-400" />}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Remote Video */}
+          {Object.entries(peers).map(([userId, stream]) => (
+            <div key={userId} className="flex-1 relative group">
+              <div className="h-full bg-gray-900 rounded-2xl overflow-hidden shadow-2xl">
+                <video
+                  autoPlay
+                  playsInline
+                  className="w-full h-full object-cover"
+                  ref={el => {
+                    if (el && stream) {
+                      el.srcObject = stream;
+                    }
+                    remoteVideosRef.current[userId] = el;
+                  }}
+                />
+                <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent">
+                  <div className="absolute top-4 left-4 flex items-center gap-2 bg-black/60 backdrop-blur-sm px-3 py-1.5 rounded-full">
+                    <User size={16} className="text-blue-400" />
+                    <span className="font-medium text-sm">User {userId.slice(-4)}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      );
     }
-    return videoLayout;
+
+    // For more than 2 participants or mobile: Use grid layout
+    const gridCols = isMobile ? "grid-cols-1" : 
+                    totalParticipants <= 4 ? "grid-cols-2" :
+                    totalParticipants <= 9 ? "grid-cols-3" : "grid-cols-4";
+
+    return (
+      <div className={`grid ${gridCols} gap-4 p-4`}>
+        {/* Local Video Card */}
+        <div className="relative group">
+          <div className="aspect-video bg-gray-900 rounded-xl overflow-hidden">
+            <video 
+              ref={localVideo} 
+              autoPlay 
+              muted 
+              playsInline
+              className="w-full h-full object-cover"
+            />
+            <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent">
+              <div className="absolute top-3 left-3 flex items-center gap-2 bg-black/60 backdrop-blur-sm px-2 py-1 rounded-full">
+                <Crown size={14} className="text-amber-400" />
+                <span className="text-xs font-medium">You</span>
+                {muted && <MicOff size={12} className="text-rose-400 ml-1" />}
+                {cameraOff && <VideoOff size={12} className="text-rose-400" />}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Remote Video Cards */}
+        {Object.entries(peers).map(([userId, stream]) => (
+          <div key={userId} className="relative group">
+            <div className="aspect-video bg-gray-900 rounded-xl overflow-hidden">
+              <video
+                autoPlay
+                playsInline
+                className="w-full h-full object-cover"
+                ref={el => {
+                  if (el && stream) {
+                    el.srcObject = stream;
+                  }
+                  remoteVideosRef.current[userId] = el;
+                }}
+              />
+              <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent">
+                <div className="absolute top-3 left-3 flex items-center gap-2 bg-black/60 backdrop-blur-sm px-2 py-1 rounded-full">
+                  <User size={14} className="text-blue-400" />
+                  <span className="text-xs font-medium">User {userId.slice(-4)}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    );
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-900 to-gray-950 text-white relative">
-      {/* Top Bar - Mobile & Desktop */}
-      <div className="flex justify-between items-center px-4 py-3 md:px-6 md:py-4 bg-gray-800/80 backdrop-blur-lg border-b border-gray-700/50">
-        {/* Left section */}
+    <div className="min-h-screen bg-gradient-to-br from-gray-900 to-black text-white relative overflow-hidden">
+      {/* Top Bar */}
+      <div className="flex justify-between items-center px-4 py-3 md:px-6 md:py-4 bg-gray-900/80 backdrop-blur-lg border-b border-gray-800 z-40 relative">
         <div className="flex items-center gap-3">
-          {/* Mobile back button */}
           {isMobile && (
             <button
               onClick={() => navigate("/")}
-              className="p-2 hover:bg-gray-700/50 rounded-lg"
+              className="p-2 hover:bg-gray-800 rounded-lg transition-colors"
             >
               <ChevronLeft size={20} />
             </button>
           )}
           
-          {/* Connection status */}
           <div className="flex items-center gap-2">
             <div className={`w-2 h-2 rounded-full ${
-              status === 'connected' ? 'bg-green-500 animate-pulse' :
-              status === 'connecting' ? 'bg-yellow-500 animate-pulse' : 'bg-red-500'
+              status === 'connected' ? 'bg-emerald-500 animate-pulse' :
+              status === 'connecting' ? 'bg-amber-500 animate-pulse' : 'bg-rose-500'
             }`}></div>
             <span className="text-sm font-medium hidden sm:inline">
               {status === 'connected' ? 'Connected' : 
                status === 'connecting' ? 'Connecting...' : 'Disconnected'}
             </span>
           </div>
-          
-          {/* Participants count - Mobile */}
-          {isMobile && (
-            <button
-              onClick={() => setShowParticipants(!showParticipants)}
-              className="flex items-center gap-1 px-2 py-1 bg-gray-700/50 rounded-lg text-sm"
-            >
-              <Users size={14} />
-              <span>{participants}</span>
-            </button>
-          )}
         </div>
         
-        {/* Center - Meeting ID */}
         <div className="flex-1 flex justify-center">
-          <div className="flex items-center gap-2 bg-gray-800/70 px-3 py-1.5 rounded-lg max-w-xs">
-            <span className="text-sm text-gray-300 truncate">Room:</span>
-            <code className="font-mono font-bold text-sm truncate">{id}</code>
+          <div className="flex items-center gap-2 bg-gray-800/60 px-4 py-2 rounded-lg backdrop-blur-sm">
+            <Sparkles size={14} className="text-amber-400" />
+            <span className="text-sm text-gray-300">Room:</span>
+            <code className="font-mono font-bold text-sm truncate max-w-[120px] md:max-w-none">{id}</code>
             <button 
               onClick={copyMeetingId}
-              className="text-gray-400 hover:text-white transition-colors shrink-0"
+              className="text-gray-400 hover:text-white transition-colors hover:scale-110 active:scale-95"
             >
               <Copy size={14} />
             </button>
           </div>
         </div>
         
-        {/* Right section */}
         <div className="flex items-center gap-2">
-          {/* Desktop participants */}
-          {!isMobile && (
-            <div className="hidden md:flex items-center gap-2 px-3 py-1.5 bg-gray-700/50 rounded-lg text-sm">
-              <Users size={16} />
-              <span>{participants}</span>
+          <button
+            onClick={() => setShowParticipants(!showParticipants)}
+            className="p-2 hover:bg-gray-800 rounded-lg transition-colors relative"
+          >
+            <Users size={20} />
+            {participants > 1 && (
+              <span className="absolute -top-1 -right-1 bg-emerald-500 text-xs rounded-full w-5 h-5 flex items-center justify-center">
+                {participants}
+              </span>
+            )}
+          </button>
+          
+          {!isMobile && participants > 2 && (
+            <div className="hidden md:flex items-center gap-1">
+              <button
+                onClick={() => setVideoLayout("grid")}
+                className={`p-2 rounded-lg ${videoLayout === "grid" ? "bg-blue-600" : "bg-gray-800 hover:bg-gray-700"}`}
+              >
+                <Grid3x3 size={18} />
+              </button>
+              <button
+                onClick={() => setVideoLayout("sideBySide")}
+                className={`p-2 rounded-lg ${videoLayout === "sideBySide" ? "bg-blue-600" : "bg-gray-800 hover:bg-gray-700"}`}
+              >
+                <LayoutGrid size={18} />
+              </button>
             </div>
           )}
           
-          {/* Settings button */}
           <button
             onClick={() => setShowSettings(!showSettings)}
-            className="p-2 hover:bg-gray-700/50 rounded-lg"
+            className="p-2 hover:bg-gray-800 rounded-lg transition-colors"
           >
             <Settings size={20} />
           </button>
-          
-          {/* Mobile menu */}
-          {isMobile && (
-            <button
-              onClick={() => setShowSettings(!showSettings)}
-              className="p-2 hover:bg-gray-700/50 rounded-lg"
-            >
-              <MoreVertical size={20} />
-            </button>
-          )}
         </div>
       </div>
       
-      {/* Main Content */}
-      <div className="p-2 md:p-4 lg:p-6">
-        {/* Video Container - Responsive */}
-        <div className={`max-w-7xl mx-auto ${
-          getVideoLayout() === 'grid' ? 
-            'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2 md:gap-4' :
-          getVideoLayout() === 'vertical' ?
-            'flex flex-col gap-2 md:gap-4' :
-          'flex flex-col lg:flex-row gap-4'
-        }`}>
-          
-          {/* Local Video Card */}
-          <div className={`relative group ${
-            getVideoLayout() === 'vertical' ? 'order-1' : ''
-          }`}>
-            <div className="bg-gray-800 rounded-xl md:rounded-2xl overflow-hidden shadow-xl">
-              <video 
-                ref={localVideo} 
-                autoPlay 
-                muted 
-                playsInline
-                className="w-full h-48 sm:h-56 md:h-64 lg:h-72 object-cover"
-              />
-              
-              {/* Overlay */}
-              <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity">
-                <div className="absolute bottom-3 left-3 flex items-center gap-2 bg-black/50 backdrop-blur-sm px-2 py-1 rounded-full">
-                  <span className="text-xs font-medium">You</span>
-                  {muted && <MicOff size={12} className="text-red-400" />}
-                  {cameraOff && <VideoOff size={12} className="text-red-400" />}
-                  {screenSharing && <ScreenShare size={12} className="text-green-400" />}
-                </div>
-                
-                {!isMobile && (
-                  <button
-                    onClick={() => localVideo.current?.requestFullscreen()}
-                    className="absolute top-3 right-3 p-1.5 bg-black/50 backdrop-blur-sm rounded-full hover:bg-black/70 transition-colors"
-                  >
-                    <Maximize2 size={16} />
-                  </button>
-                )}
-              </div>
-            </div>
-            
-            {/* Connection badge */}
-            {status !== 'connected' && (
-              <div className="absolute top-2 left-2 bg-red-600/90 backdrop-blur-sm px-2 py-1 rounded-lg text-xs flex items-center gap-1">
-                {status === 'disconnected' ? <WifiOff size={12} /> : <Wifi size={12} />}
-                <span>{status === 'disconnected' ? 'Offline' : 'Connecting'}</span>
-              </div>
-            )}
-          </div>
-          
-          {/* Remote Videos */}
-          {Object.entries(peers).map(([userId, stream], index) => (
-            <div 
-              key={userId} 
-              className={`relative group ${
-                getVideoLayout() === 'vertical' ? `order-${index + 2}` : ''
-              }`}
-            >
-              <div className="bg-gray-800 rounded-xl md:rounded-2xl overflow-hidden shadow-xl">
-                <video
-                  autoPlay
-                  playsInline
-                  className="w-full h-48 sm:h-56 md:h-64 lg:h-72 object-cover"
-                  ref={el => {
-                    if (el && stream) {
-                      el.srcObject = stream;
-                    }
-                  }}
-                />
-                
-                {/* Overlay */}
-                <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity">
-                  <div className="absolute bottom-3 left-3 flex items-center gap-2 bg-black/50 backdrop-blur-sm px-2 py-1 rounded-full">
-                    <span className="text-xs font-medium">User {userId.slice(-4)}</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          ))}
-          
-          {/* Empty State */}
-          {Object.keys(peers).length === 0 && status === 'connected' && (
-            <div className="col-span-1 sm:col-span-2 lg:col-span-3 xl:col-span-4">
-              <div className="h-64 md:h-96 rounded-xl md:rounded-2xl bg-gradient-to-br from-gray-800/30 to-gray-900/30 border-2 border-dashed border-gray-700 flex flex-col items-center justify-center p-4">
-                <div className="text-center">
-                  <div className="inline-block p-4 md:p-6 bg-gray-800/50 rounded-full mb-4 md:mb-6">
-                    <Users size={isMobile ? 32 : 48} className="text-gray-400" />
-                  </div>
-                  <h3 className="text-lg md:text-2xl font-bold mb-2">You're the only one here</h3>
-                  <p className="text-gray-400 text-sm md:text-base mb-4 md:mb-6 max-w-md mx-auto">
-                    Invite others by sharing the meeting ID
-                  </p>
-                  <div className="flex flex-col sm:flex-row items-center gap-3 justify-center">
-                    <div className="bg-gray-800/70 px-4 py-2 md:px-6 md:py-3 rounded-lg md:rounded-xl">
-                      <code className="text-base md:text-xl font-mono font-bold">{id}</code>
-                    </div>
-                    <button
-                      onClick={copyMeetingId}
-                      className="bg-blue-600 hover:bg-blue-700 px-4 py-2 md:px-6 md:py-3 rounded-lg md:rounded-xl font-medium flex items-center gap-2 text-sm md:text-base"
-                    >
-                      <Copy size={isMobile ? 16 : 18} />
-                      Copy ID
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
+      {/* Main Video Area */}
+      <div className="h-[calc(100vh-140px)] md:h-[calc(100vh-160px)] overflow-y-auto">
+        {renderVideoLayout()}
         
-        {/* Layout Controls - Desktop only */}
-        {!isMobile && (
-          <div className="flex justify-center mt-4 md:mt-6 gap-2">
-            {["grid", "speaker", "sidebar"].map((layout) => (
-              <button
-                key={layout}
-                onClick={() => setVideoLayout(layout)}
-                className={`px-3 py-1.5 md:px-4 md:py-2 rounded-lg capitalize text-sm md:text-base flex items-center gap-2 ${
-                  videoLayout === layout 
-                    ? 'bg-blue-600 text-white' 
-                    : 'bg-gray-800/50 text-gray-300 hover:bg-gray-700/50'
-                } transition-colors`}
-              >
-                <Layout size={isMobile ? 14 : 16} />
-                {layout}
-              </button>
-            ))}
+        {/* Empty State */}
+        {Object.keys(peers).length === 0 && status === 'connected' && (
+          <div className="h-full flex flex-col items-center justify-center p-8">
+            <div className="max-w-lg text-center">
+              <div className="inline-block p-8 bg-gradient-to-br from-gray-800/50 to-gray-900/30 rounded-2xl border-2 border-gray-700/50 mb-8">
+                <Users size={80} className="text-gray-600 mx-auto mb-6" />
+                <h3 className="text-3xl font-bold mb-3">You're the only one here</h3>
+                <p className="text-gray-400 text-lg mb-8">
+                  Invite others to join this meeting by sharing the ID below
+                </p>
+                <div className="flex flex-col sm:flex-row items-center gap-4 justify-center">
+                  <div className="bg-gray-800/70 px-6 py-4 rounded-xl">
+                    <code className="text-2xl font-mono font-bold">{id}</code>
+                  </div>
+                  <button
+                    onClick={copyMeetingId}
+                    className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 px-6 py-4 rounded-xl font-medium flex items-center gap-3 text-lg transition-all hover:scale-105 active:scale-95"
+                  >
+                    <Copy size={20} />
+                    Copy Meeting ID
+                  </button>
+                </div>
+              </div>
+              <p className="text-gray-500 text-sm">
+                Share this ID with others so they can join your meeting
+              </p>
+            </div>
           </div>
         )}
       </div>
       
-      {/* Mobile Participants Panel */}
-      {isMobile && showParticipants && (
-        <div className="fixed inset-0 bg-black/90 backdrop-blur-sm z-40 pt-16">
-          <div className="p-4">
+      {/* Participants Panel */}
+      {showParticipants && (
+        <div className="fixed inset-y-0 right-0 w-full md:w-80 bg-gray-900/95 backdrop-blur-xl border-l border-gray-800 z-50">
+          <div className="p-6 h-full overflow-y-auto">
             <div className="flex justify-between items-center mb-6">
-              <h2 className="text-xl font-bold">Participants ({participants})</h2>
+              <h2 className="text-xl font-bold flex items-center gap-2">
+                <Users size={20} />
+                Participants ({participants})
+              </h2>
               <button
                 onClick={() => setShowParticipants(false)}
-                className="p-2 hover:bg-gray-800 rounded-lg"
+                className="p-2 hover:bg-gray-800 rounded-lg transition-colors"
               >
                 ✕
               </button>
             </div>
             
             <div className="space-y-3">
-              {/* Local user */}
-              <div className="flex items-center gap-3 p-3 bg-gray-800/50 rounded-xl">
-                <div className="w-10 h-10 bg-blue-600 rounded-full flex items-center justify-center">
-                  <User size={20} />
+              {/* Local User */}
+              <div className="flex items-center gap-3 p-3 bg-gray-800/50 hover:bg-gray-700/50 rounded-xl transition-colors">
+                <div className="relative">
+                  <div className="w-12 h-12 bg-gradient-to-br from-blue-600 to-indigo-600 rounded-full flex items-center justify-center">
+                    <User size={24} />
+                  </div>
+                  <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-emerald-500 rounded-full border-2 border-gray-900"></div>
                 </div>
-                <div className="flex-1">
-                  <p className="font-medium">You (Host)</p>
-                  <p className="text-sm text-gray-400">Connected</p>
-                </div>
-                <div className="flex gap-1">
-                  {muted && <MicOff size={16} className="text-red-400" />}
-                  {cameraOff && <VideoOff size={16} className="text-red-400" />}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <p className="font-medium truncate">You (Host)</p>
+                    <Crown size={14} className="text-amber-400" />
+                  </div>
+                  <div className="flex items-center gap-2 text-sm text-gray-400">
+                    <div className="flex items-center gap-1">
+                      {muted ? (
+                        <>
+                          <MicOff size={12} className="text-rose-400" />
+                          <span>Muted</span>
+                        </>
+                      ) : (
+                        <>
+                          <Mic size={12} className="text-emerald-400" />
+                          <span>Speaking</span>
+                        </>
+                      )}
+                    </div>
+                    {cameraOff && (
+                      <>
+                        <span>•</span>
+                        <VideoOff size={12} className="text-rose-400" />
+                      </>
+                    )}
+                  </div>
                 </div>
               </div>
               
-              {/* Remote users */}
-              {Object.keys(peers).map((userId) => (
-                <div key={userId} className="flex items-center gap-3 p-3 bg-gray-800/50 rounded-xl">
-                  <div className="w-10 h-10 bg-purple-600 rounded-full flex items-center justify-center">
-                    <User size={20} />
+              {/* Remote Users */}
+              {Object.entries(peers).map(([userId, stream]) => (
+                <div
+                  key={userId}
+                  className="flex items-center gap-3 p-3 bg-gray-800/50 hover:bg-gray-700/50 rounded-xl transition-colors"
+                >
+                  <div className="relative">
+                    <div className="w-12 h-12 bg-gradient-to-br from-purple-600 to-pink-600 rounded-full flex items-center justify-center">
+                      <User size={24} />
+                    </div>
+                    <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-emerald-500 rounded-full border-2 border-gray-900"></div>
                   </div>
-                  <div className="flex-1">
-                    <p className="font-medium">User {userId.slice(-4)}</p>
-                    <p className="text-sm text-gray-400">Connected</p>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-medium truncate">User {userId.slice(-4)}</p>
+                    <div className="flex items-center gap-2 text-sm text-gray-400">
+                      <div className="flex items-center gap-1">
+                        <Volume2 size={12} className="text-emerald-400" />
+                        <span>Connected</span>
+                      </div>
+                    </div>
                   </div>
                 </div>
               ))}
@@ -601,141 +653,101 @@ export default function Meeting() {
         </div>
       )}
       
-      {/* Control Bar - Responsive */}
+      {/* Control Bar */}
       <div className={`fixed ${
         isMobile 
           ? showControls 
             ? 'bottom-0 left-0 right-0 animate-slideUp' 
             : 'bottom-0 left-0 right-0 -translate-y-full animate-slideDown'
-          : 'bottom-8 left-1/2 transform -translate-x-1/2'
-      } transition-transform duration-300 z-30`}>
-        <div className={`flex items-center ${
+          : 'bottom-6 left-1/2 transform -translate-x-1/2'
+      } transition-transform duration-300 z-40`}>
+        <div className={`flex items-center justify-center ${
           isMobile 
-            ? 'justify-between bg-gray-900/95 backdrop-blur-xl px-4 py-3 border-t border-gray-800' 
-            : 'gap-2 bg-gray-800/90 backdrop-blur-xl px-6 py-3 rounded-2xl shadow-2xl border border-gray-700/50'
+            ? 'bg-gradient-to-t from-gray-900 to-gray-900/95 backdrop-blur-xl px-4 py-4' 
+            : 'gap-3 bg-gray-900/90 backdrop-blur-xl px-6 py-4 rounded-2xl shadow-2xl border border-gray-800'
         }`}>
           
-          {/* Mobile: Left controls */}
-          {isMobile && (
-            <div className="flex items-center gap-1">
-              <button
-                onClick={toggleMute}
-                className={`p-3 rounded-full ${
-                  muted ? 'bg-red-600' : 'bg-gray-700'
-                }`}
-              >
-                {muted ? (
-                  <MicOff size={20} className="text-white" />
-                ) : (
-                  <Mic size={20} className="text-white" />
-                )}
-              </button>
-              
-              <button
-                onClick={toggleCamera}
-                className={`p-3 rounded-full ${
-                  cameraOff ? 'bg-red-600' : 'bg-gray-700'
-                }`}
-              >
-                {cameraOff ? (
-                  <VideoOff size={20} className="text-white" />
-                ) : (
-                  <Video size={20} className="text-white" />
-                )}
-              </button>
-            </div>
-          )}
-          
-          {/* Desktop: All controls in center */}
-          {!isMobile && (
-            <>
-              <div className="hidden md:block px-3 py-1.5 bg-gray-700/50 rounded-lg">
-                <div className="flex items-center gap-2">
-                  <Bell size={16} className="text-yellow-400" />
-                  <span className="text-sm">
-                    {participants} {participants === 1 ? 'person' : 'people'}
-                  </span>
-                </div>
-              </div>
-              
-              <div className="w-px h-6 bg-gray-600"></div>
-              
-              <div className="flex items-center gap-1">
-                <button
-                  onClick={toggleMute}
-                  className={`p-3 rounded-full transition-all ${
-                    muted ? 'bg-red-600 hover:bg-red-700' : 'bg-gray-700 hover:bg-gray-600'
-                  }`}
-                >
-                  {muted ? <MicOff size={22} /> : <Mic size={22} />}
-                </button>
-                
-                <button
-                  onClick={toggleCamera}
-                  className={`p-3 rounded-full transition-all ${
-                    cameraOff ? 'bg-red-600 hover:bg-red-700' : 'bg-gray-700 hover:bg-gray-600'
-                  }`}
-                >
-                  {cameraOff ? <VideoOff size={22} /> : <Video size={22} />}
-                </button>
-                
-                <button
-                  onClick={toggleScreenShare}
-                  className={`p-3 rounded-full transition-all ${
-                    screenSharing ? 'bg-green-600 hover:bg-green-700' : 'bg-gray-700 hover:bg-gray-600'
-                  }`}
-                >
-                  <ScreenShare size={22} />
-                </button>
-              </div>
-              
-              <div className="w-px h-6 bg-gray-600"></div>
-            </>
-          )}
-          
-          {/* Mobile: Center - Screen share */}
-          {isMobile && (
+          {/* Control Buttons */}
+          <div className="flex items-center gap-2 md:gap-4">
+            {/* Mute Toggle */}
             <button
-              onClick={toggleScreenShare}
-              className={`p-3 rounded-full ${
-                screenSharing ? 'bg-green-600' : 'bg-gray-700'
+              onClick={toggleMute}
+              className={`p-3 md:p-4 rounded-full transition-all duration-300 ${
+                muted 
+                  ? 'bg-gradient-to-br from-rose-600 to-rose-700 hover:from-rose-700 hover:to-rose-800' 
+                  : 'bg-gray-800 hover:bg-gray-700'
               }`}
             >
-              <ScreenShare size={20} className="text-white" />
+              {muted ? (
+                <MicOff size={isMobile ? 20 : 24} className="text-white" />
+              ) : (
+                <Mic size={isMobile ? 20 : 24} className="text-white" />
+              )}
             </button>
-          )}
-          
-          {/* Leave button - Right side on mobile, center on desktop */}
-          <button
-            onClick={leaveMeeting}
-            className={`${
-              isMobile 
-                ? 'px-4 py-2 bg-red-600 rounded-full font-medium flex items-center gap-2'
-                : 'px-6 py-3 bg-red-600 hover:bg-red-700 rounded-full font-medium flex items-center gap-2 transition-all transform hover:scale-105'
-            }`}
-          >
-            <Phone size={20} className={isMobile ? "" : "rotate-135"} />
-            {!isMobile && <span>Leave</span>}
-          </button>
+            
+            {/* Camera Toggle */}
+            <button
+              onClick={toggleCamera}
+              className={`p-3 md:p-4 rounded-full transition-all duration-300 ${
+                cameraOff 
+                  ? 'bg-gradient-to-br from-rose-600 to-rose-700 hover:from-rose-700 hover:to-rose-800' 
+                  : 'bg-gray-800 hover:bg-gray-700'
+              }`}
+            >
+              {cameraOff ? (
+                <VideoOff size={isMobile ? 20 : 24} className="text-white" />
+              ) : (
+                <Video size={isMobile ? 20 : 24} className="text-white" />
+              )}
+            </button>
+            
+            {/* Screen Share */}
+            <button
+              onClick={toggleScreenShare}
+              className={`p-3 md:p-4 rounded-full transition-all duration-300 ${
+                screenSharing 
+                  ? 'bg-gradient-to-br from-emerald-600 to-emerald-700 hover:from-emerald-700 hover:to-emerald-800' 
+                  : 'bg-gray-800 hover:bg-gray-700'
+              }`}
+            >
+              <ScreenShare size={isMobile ? 20 : 24} className="text-white" />
+            </button>
+            
+            {/* Leave Button */}
+            <button
+              onClick={leaveMeeting}
+              className={`${
+                isMobile 
+                  ? 'px-6 py-3' 
+                  : 'px-8 py-4'
+              } bg-gradient-to-br from-rose-600 to-rose-700 hover:from-rose-700 hover:to-rose-800 rounded-full font-medium flex items-center gap-2 transition-all duration-300 hover:scale-105 active:scale-95`}
+            >
+              <Phone size={20} className="rotate-135" />
+              <span className={isMobile ? "" : "font-semibold"}>Leave</span>
+            </button>
+          </div>
         </div>
         
         {/* Mobile tap indicator */}
         {isMobile && !showControls && (
-          <div className="absolute -top-8 left-1/2 transform -translate-x-1/2 bg-gray-800/80 backdrop-blur-sm px-3 py-1 rounded-full text-xs animate-pulse">
-            Tap to show controls
+          <div className="absolute -top-10 left-1/2 transform -translate-x-1/2 bg-gray-800 backdrop-blur-sm px-4 py-2 rounded-full text-sm animate-pulse border border-gray-700">
+            👆 Tap to show controls
           </div>
         )}
       </div>
       
-      {/* Settings Panel - Responsive */}
+      {/* Settings Panel */}
       {showSettings && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-gray-800 rounded-2xl max-w-md w-full max-h-[90vh] overflow-y-auto border border-gray-700">
-            <div className="flex justify-between items-center p-6 border-b border-gray-700">
-              <h2 className="text-xl font-bold">Settings</h2>
+          <div className="bg-gradient-to-b from-gray-900 to-gray-950 rounded-2xl max-w-md w-full max-h-[90vh] overflow-y-auto border border-gray-800">
+            <div className="flex justify-between items-center p-6 border-b border-gray-800">
+              <h2 className="text-xl font-bold flex items-center gap-2">
+                <Settings size={20} />
+                Settings
+              </h2>
               <button
                 onClick={() => setShowSettings(false)}
-                className="p-2 hover:bg-gray-700 rounded-lg"
+                className="p-2 hover:bg-gray-800 rounded-lg transition-colors"
               >
                 ✕
               </button>
@@ -748,17 +760,22 @@ export default function Meeting() {
                   Connection
                 </h3>
                 <div className="space-y-3">
-                  <div className="flex items-center justify-between p-3 bg-gray-900/50 rounded-lg">
+                  <div className="flex items-center justify-between p-3 bg-gray-800/50 rounded-lg">
                     <span className="text-sm">Status</span>
-                    <span className={`px-2 py-1 rounded text-xs ${
-                      status === 'connected' ? 'bg-green-600' : 'bg-red-600'
-                    }`}>
-                      {status}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <div className={`w-2 h-2 rounded-full ${
+                        status === 'connected' ? 'bg-emerald-500' : 'bg-rose-500'
+                      }`}></div>
+                      <span className={`text-sm ${
+                        status === 'connected' ? 'text-emerald-400' : 'text-rose-400'
+                      }`}>
+                        {status.charAt(0).toUpperCase() + status.slice(1)}
+                      </span>
+                    </div>
                   </div>
                   <button
                     onClick={reconnect}
-                    className="w-full p-3 bg-blue-600 hover:bg-blue-700 rounded-lg flex items-center justify-center gap-2"
+                    className="w-full p-3 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 rounded-lg flex items-center justify-center gap-2 transition-all"
                   >
                     <RefreshCw size={18} />
                     Reconnect
@@ -767,29 +784,15 @@ export default function Meeting() {
               </div>
               
               <div>
-                <h3 className="font-medium mb-3">Video Quality</h3>
-                <div className="grid grid-cols-2 gap-2">
-                  {['360p', '720p', '1080p', 'Auto'].map((quality) => (
-                    <button
-                      key={quality}
-                      className="py-3 px-4 bg-gray-700/50 hover:bg-gray-600 rounded-lg text-sm"
-                    >
-                      {quality}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              
-              <div>
                 <h3 className="font-medium mb-3">Meeting Info</h3>
                 <div className="space-y-2">
-                  <div className="flex items-center justify-between p-3 bg-gray-900/50 rounded-lg">
+                  <div className="flex items-center justify-between p-3 bg-gray-800/50 rounded-lg">
                     <span className="text-sm">Meeting ID</span>
                     <code className="font-mono">{id}</code>
                   </div>
                   <button
                     onClick={copyMeetingId}
-                    className="w-full p-3 bg-gray-700 hover:bg-gray-600 rounded-lg flex items-center justify-center gap-2"
+                    className="w-full p-3 bg-gray-800 hover:bg-gray-700 rounded-lg flex items-center justify-center gap-2 transition-all"
                   >
                     <Copy size={18} />
                     Copy Meeting ID
@@ -797,32 +800,10 @@ export default function Meeting() {
                 </div>
               </div>
               
-              {!isMobile && (
-                <div>
-                  <h3 className="font-medium mb-3">Layout</h3>
-                  <div className="grid grid-cols-3 gap-2">
-                    {["grid", "speaker", "sidebar"].map((layout) => (
-                      <button
-                        key={layout}
-                        onClick={() => setVideoLayout(layout)}
-                        className={`py-3 rounded-lg flex flex-col items-center gap-2 ${
-                          videoLayout === layout 
-                            ? 'bg-blue-600' 
-                            : 'bg-gray-700/50 hover:bg-gray-600'
-                        }`}
-                      >
-                        <Layout size={20} />
-                        <span className="text-xs capitalize">{layout}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-              
-              <div className="pt-4 border-t border-gray-700">
+              <div className="pt-4 border-t border-gray-800">
                 <div className="flex items-center gap-2 text-sm text-gray-400">
-                  <Shield size={16} className="text-green-400" />
-                  <span>End-to-end encrypted</span>
+                  <Shield size={16} className="text-emerald-400" />
+                  <span>End-to-end encrypted • Premium quality</span>
                 </div>
               </div>
             </div>
