@@ -1,8 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import io from "socket.io-client";
 const BASE_URL = import.meta.env.VITE_API_URL;
-
 
 export default function Meeting() {
   const { id } = useParams();
@@ -10,225 +9,171 @@ export default function Meeting() {
   
   // Refs
   const localVideo = useRef(null);
-  const localStream = useRef(null);
   const peerConnections = useRef({});
   const socketRef = useRef(null);
-  const screenStreamRef = useRef(null);
+  const localStreamRef = useRef(null);
+  const reconnectAttempts = useRef(0);
+  const maxReconnectAttempts = 5;
   
   // State
   const [peers, setPeers] = useState({});
   const [muted, setMuted] = useState(false);
   const [cameraOff, setCameraOff] = useState(false);
-  const [sharingScreen, setSharingScreen] = useState(false);
   const [participants, setParticipants] = useState(1);
   const [connected, setConnected] = useState(false);
-  const [roomUsers, setRoomUsers] = useState([]);
-  const [mediaError, setMediaError] = useState(null);
-  const [hasMedia, setHasMedia] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [logs, setLogs] = useState([]);
+  const [roomUsers, setRoomUsers] = useState([]);
+  const [connectionStatus, setConnectionStatus] = useState("disconnected");
 
-  // WebRTC Configuration
-  const pcConfig = {
+  // Add log
+  const addLog = useCallback((message) => {
+    const timestamp = new Date().toLocaleTimeString();
+    const log = `[${timestamp}] ${message}`;
+    console.log(log);
+    setLogs(prev => [...prev.slice(-20), log]);
+  }, []);
+
+  // WebRTC configuration
+  const getRTCConfig = useCallback(() => ({
     iceServers: [
       { urls: "stun:stun.l.google.com:19302" },
       { urls: "stun:stun1.l.google.com:19302" },
       { urls: "stun:stun2.l.google.com:19302" },
-      { urls: "stun:stun3.l.google.com:19302" },
-      { urls: "stun:stun4.l.google.com:19302" }
+      { urls: "stun:stun3.l.google.com:19302" }
     ],
-    iceCandidatePoolSize: 10
-  };
+    iceCandidatePoolSize: 10,
+    iceTransportPolicy: "all"
+  }), []);
 
-  // Initialize socket and media
-  useEffect(() => {
-    console.log("🎬 Initializing meeting room:", id);
-    setIsLoading(true);
+  // Initialize socket connection
+  const connectSocket = useCallback(() => {
+    addLog("🔗 Connecting to server...");
+    setConnectionStatus("connecting");
     
-    // Initialize socket first (don't wait for media)
-    socketRef.current = io( BASE_URL, {
+    socketRef.current = io(BASE_URL, {
       transports: ['websocket', 'polling'],
       reconnection: true,
-      reconnectionAttempts: 5
+      reconnectionAttempts: maxReconnectAttempts,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      timeout: 20000,
+      forceNew: true
     });
     
     const socket = socketRef.current;
     
-    // Socket event handlers
+    // Socket events
     socket.on("connect", () => {
-      console.log("✅ Socket connected:", socket.id);
+      addLog(`✅ Socket connected: ${socket.id}`);
       setConnected(true);
+      setConnectionStatus("connected");
+      reconnectAttempts.current = 0;
       
-      // Join room immediately
-      socket.emit("join-room", id);
+      // Get user media and join room
+      initMedia();
     });
     
     socket.on("connect_error", (err) => {
-      console.error("❌ Socket connection error:", err);
+      addLog(`❌ Connection error: ${err.message}`);
+      setConnectionStatus("error");
+    });
+    
+    socket.on("disconnect", (reason) => {
+      addLog(`⚠️ Disconnected: ${reason}`);
       setConnected(false);
-      setMediaError("Cannot connect to server. Please check your internet connection.");
-    });
-    
-    // Get user media - with permission handling
-    const initMedia = async () => {
-      try {
-        console.log("🎥 Requesting user media...");
-        setMediaError(null);
-        
-        // Try to get audio and video
-        let stream;
-        
-        try {
-          stream = await navigator.mediaDevices.getUserMedia({
-            video: {
-              width: { ideal: 640 },
-              height: { ideal: 480 },
-              frameRate: { ideal: 30 }
-            },
-            audio: {
-              echoCancellation: true,
-              noiseSuppression: true
-            }
-          });
-        } catch (videoAudioError) {
-          console.log("Video+audio failed, trying audio only...", videoAudioError);
-          
-          // Try audio only
-          try {
-            stream = await navigator.mediaDevices.getUserMedia({
-              audio: true,
-              video: false
-            });
-            setCameraOff(true); // Mark camera as off since we don't have video
-            setMediaError("Camera access denied. Using audio only.");
-          } catch (audioOnlyError) {
-            console.log("Audio only failed, trying video only...", audioOnlyError);
-            
-            // Try video only
-            try {
-              stream = await navigator.mediaDevices.getUserMedia({
-                video: true,
-                audio: false
-              });
-              setMuted(true); // Mark audio as muted since we don't have mic
-              setMediaError("Microphone access denied. Using video only.");
-            } catch (videoOnlyError) {
-              console.log("Video only failed, no media available...", videoOnlyError);
-              
-              // No media available - create a dummy stream with black video and silent audio
-              stream = await createDummyStream();
-              setCameraOff(true);
-              setMuted(true);
-              setMediaError("Camera and microphone access denied. You can still join and listen.");
-            }
-          }
-        }
-        
-        // Successfully got some media
-        localStream.current = stream;
-        
-        if (localVideo.current) {
-          localVideo.current.srcObject = stream;
-          localVideo.current.muted = true; // Always mute local video
-          localVideo.current.volume = 0; // Set volume to 0
-        }
-        
-        setHasMedia(true);
-        console.log("✅ Media obtained:", 
-          stream.getVideoTracks().length > 0 ? "Video" : "No Video",
-          stream.getAudioTracks().length > 0 ? "Audio" : "No Audio"
-        );
-        
-        // Notify that we're ready
-        setTimeout(() => {
-          socket.emit("ready", id);
-          console.log("✅ Notified server we're ready");
-        }, 1000);
-        
-      } catch (err) {
-        console.error("❌ Critical media error:", err);
-        setMediaError("Unable to access media devices. You can still join the meeting.");
-        
-        // Create dummy stream so we can still join
-        try {
-          const dummyStream = await createDummyStream();
-          localStream.current = dummyStream;
-          
-          if (localVideo.current) {
-            localVideo.current.srcObject = dummyStream;
-            localVideo.current.muted = true;
-          }
-          
-          setHasMedia(true);
-          setCameraOff(true);
-          setMuted(true);
-        } catch (dummyErr) {
-          console.error("❌ Cannot create dummy stream:", dummyErr);
-          // User can still join without media
-        }
-      } finally {
-        setIsLoading(false);
-      }
-    };
-    
-    // Handle existing users in room
-    socket.on("existing-users", (userIds) => {
-      console.log("👥 Existing users:", userIds);
+      setConnectionStatus("disconnected");
       
-      if (userIds.length > 0) {
-        setRoomUsers(userIds);
-        setParticipants(userIds.length + 1);
-        
-        // Create peer connection for each existing user
-        userIds.forEach(userId => {
-          if (userId !== socket.id && !peerConnections.current[userId]) {
-            console.log(`Creating peer connection for existing user: ${userId}`);
-            createPeerConnection(userId, true);
+      if (reason === "io server disconnect" || reason === "transport close") {
+        addLog("🔄 Server disconnected, attempting to reconnect...");
+        setTimeout(() => {
+          if (reconnectAttempts.current < maxReconnectAttempts) {
+            reconnectAttempts.current++;
+            connectSocket();
           }
-        });
+        }, 2000);
       }
     });
     
-    // Handle new user joined
+    socket.on("reconnect", (attemptNumber) => {
+      addLog(`🔄 Reconnected (attempt ${attemptNumber})`);
+      setConnectionStatus("reconnecting");
+    });
+    
+    socket.on("reconnect_attempt", (attemptNumber) => {
+      addLog(`🔄 Reconnection attempt ${attemptNumber}`);
+      setConnectionStatus("reconnecting");
+    });
+    
+    socket.on("reconnect_failed", () => {
+      addLog("❌ Reconnection failed");
+      setConnectionStatus("failed");
+      alert("Connection to server lost. Please refresh the page.");
+    });
+    
+    socket.on("error", (error) => {
+      addLog(`❌ Socket error: ${error.message || error}`);
+    });
+    
+    socket.on("pong", (data) => {
+      // Keep connection alive
+      console.log("Pong received", data);
+    });
+    
+    // Existing users in room
+    socket.on("existing-users", (userIds) => {
+      addLog(`👥 Found ${userIds.length} existing user(s)`);
+      setRoomUsers(userIds);
+      
+      userIds.forEach(userId => {
+        if (userId !== socket.id && !peerConnections.current[userId]) {
+          createPeerConnection(userId, true);
+        }
+      });
+    });
+    
+    // New user joined
     socket.on("user-joined", (newUserId) => {
-      console.log(`🆕 New user joined: ${newUserId}`);
+      addLog(`🆕 New user joined: ${newUserId}`);
+      setRoomUsers(prev => [...prev, newUserId]);
       
       if (newUserId !== socket.id && !peerConnections.current[newUserId]) {
-        console.log(`Creating peer connection for new user: ${newUserId}`);
         createPeerConnection(newUserId, true);
       }
-      
-      setRoomUsers(prev => [...prev, newUserId]);
-      setParticipants(prev => prev + 1);
     });
     
-    // Handle user ready
+    // User ready
     socket.on("user-ready", (userId) => {
-      console.log(`✅ User ready: ${userId}`);
+      addLog(`✅ User ready: ${userId}`);
       
       if (userId !== socket.id && !peerConnections.current[userId]) {
-        console.log(`Creating peer connection for ready user: ${userId}`);
         createPeerConnection(userId, true);
       }
     });
     
-    // Handle WebRTC offer
+    // Room info
+    socket.on("room-info", ({ users, yourId }) => {
+      addLog(`📊 Room info: ${users.length} users, your ID: ${yourId}`);
+      setRoomUsers(users.filter(id => id !== yourId));
+    });
+    
+    // WebRTC offer
     socket.on("offer", async ({ offer, from }) => {
-      console.log(`📨 Received offer from ${from}`);
+      addLog(`📨 Received OFFER from ${from}`);
       
       try {
-        if (!peerConnections.current[from]) {
-          console.log(`Creating peer connection for offer from: ${from}`);
-          createPeerConnection(from, false);
+        let pc = peerConnections.current[from];
+        if (!pc) {
+          pc = createPeerConnection(from, false);
         }
         
-        const pc = peerConnections.current[from];
         if (!pc) {
-          console.error(`No peer connection for ${from}`);
+          addLog(`❌ No peer connection for ${from}`);
           return;
         }
         
         await pc.setRemoteDescription(new RTCSessionDescription(offer));
-        console.log(`✅ Set remote description from ${from}`);
+        addLog(`✅ Set remote description from ${from}`);
         
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
@@ -238,141 +183,147 @@ export default function Meeting() {
           to: from
         });
         
-        console.log(`📤 Sent answer to ${from}`);
+        addLog(`📤 Sent ANSWER to ${from}`);
       } catch (err) {
-        console.error("❌ Error handling offer:", err);
+        addLog(`❌ Error handling offer: ${err.message}`);
       }
     });
     
-    // Handle WebRTC answer
+    // WebRTC answer
     socket.on("answer", async ({ answer, from }) => {
-      console.log(`📨 Received answer from ${from}`);
+      addLog(`📨 Received ANSWER from ${from}`);
       
       try {
         const pc = peerConnections.current[from];
-        if (pc && pc.signalingState !== "stable") {
+        if (pc && pc.signalingState !== 'stable') {
           await pc.setRemoteDescription(new RTCSessionDescription(answer));
-          console.log(`✅ Set remote description (answer) from ${from}`);
+          addLog(`✅ Set answer from ${from}`);
         }
       } catch (err) {
-        console.error("❌ Error handling answer:", err);
+        addLog(`❌ Error handling answer: ${err.message}`);
       }
     });
     
-    // Handle ICE candidates
+    // ICE candidates
     socket.on("ice-candidate", async ({ candidate, from }) => {
-      console.log(`🧊 Received ICE candidate from ${from}`);
+      addLog(`🧊 Received ICE candidate from ${from}`);
       
       try {
         const pc = peerConnections.current[from];
         if (pc && candidate) {
           await pc.addIceCandidate(new RTCIceCandidate(candidate));
+          addLog(`✅ Added ICE candidate from ${from}`);
         }
       } catch (err) {
-        console.error("❌ Error adding ICE candidate:", err);
+        addLog(`❌ Error adding ICE candidate: ${err.message}`);
       }
     });
     
-    // Handle user left
+    // User left
     socket.on("user-left", (userId) => {
-      console.log(`👋 User left: ${userId}`);
+      addLog(`👋 User left: ${userId}`);
       
+      // Close WebRTC connection
       if (peerConnections.current[userId]) {
         peerConnections.current[userId].close();
         delete peerConnections.current[userId];
       }
       
+      // Remove from peers
       setPeers(prev => {
         const newPeers = { ...prev };
         delete newPeers[userId];
         return newPeers;
       });
       
+      // Remove from room users
       setRoomUsers(prev => prev.filter(id => id !== userId));
-      setParticipants(prev => Math.max(1, prev - 1));
     });
-    
-    // Start media initialization
-    initMedia();
-    
-    // Cleanup
-    return () => {
-      console.log("🧹 Cleaning up...");
+  }, [id, addLog]);
+
+  // Get user media
+  const initMedia = useCallback(async () => {
+    try {
+      addLog("🎥 Requesting camera and microphone...");
       
-      // Close all peer connections
-      Object.values(peerConnections.current).forEach(pc => {
-        if (pc) pc.close();
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          width: { ideal: 640 },
+          height: { ideal: 480 },
+          frameRate: { ideal: 24 }
+        },
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true
+        }
       });
-      peerConnections.current = {};
       
-      // Stop media streams
-      if (localStream.current) {
-        localStream.current.getTracks().forEach(track => track.stop());
+      localStreamRef.current = stream;
+      if (localVideo.current) {
+        localVideo.current.srcObject = stream;
+        localVideo.current.muted = true;
       }
       
-      if (screenStreamRef.current) {
-        screenStreamRef.current.getTracks().forEach(track => track.stop());
-      }
+      addLog("✅ Got camera and microphone");
       
-      // Disconnect socket
+      // Join room
       if (socketRef.current) {
-        socketRef.current.disconnect();
+        socketRef.current.emit("join-room", id);
+        addLog(`📤 Joined room: ${id}`);
+        
+        // Notify we're ready
+        setTimeout(() => {
+          socketRef.current.emit("user-ready");
+          addLog("✅ Notified server we're ready");
+        }, 1500);
       }
-    };
-  }, [id]);
-  
-  // Create a dummy media stream (for when permissions are denied)
-  const createDummyStream = async () => {
-    // Create a black video track
-    const canvas = document.createElement('canvas');
-    canvas.width = 640;
-    canvas.height = 480;
-    const ctx = canvas.getContext('2d');
-    ctx.fillStyle = 'black';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    
-    const stream = canvas.captureStream(30);
-    const videoTrack = stream.getVideoTracks()[0];
-    
-    // Create silent audio track
-    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    const oscillator = audioContext.createOscillator();
-    const dst = oscillator.connect(audioContext.createMediaStreamDestination());
-    oscillator.start();
-    const audioTrack = dst.stream.getAudioTracks()[0];
-    
-    // Add silent audio track to stream
-    stream.addTrack(audioTrack);
-    
-    // Stop the oscillator after a moment
-    setTimeout(() => oscillator.stop(), 100);
-    
-    return stream;
-  };
-  
+      
+    } catch (err) {
+      addLog(`❌ Media error: ${err.message}`);
+      alert("Camera and microphone access required for video call.");
+      navigate("/");
+    } finally {
+      setIsLoading(false);
+    }
+  }, [id, navigate, addLog]);
+
   // Create peer connection
-  const createPeerConnection = (userId, isInitiator) => {
-    console.log(`Creating peer connection with ${userId}, initiator: ${isInitiator}`);
+  const createPeerConnection = useCallback((userId, isInitiator = false) => {
+    addLog(`Creating peer connection with ${userId} (initiator: ${isInitiator})`);
     
+    // Don't create duplicate connections
     if (peerConnections.current[userId]) {
-      console.log(`Peer connection already exists for ${userId}`);
+      addLog(`⚠️ Peer connection already exists for ${userId}`);
       return peerConnections.current[userId];
     }
     
     try {
-      const pc = new RTCPeerConnection(pcConfig);
+      const pc = new RTCPeerConnection(getRTCConfig());
       peerConnections.current[userId] = pc;
       
-      // Add local tracks if we have them
-      if (localStream.current) {
-        localStream.current.getTracks().forEach(track => {
-          if (track.kind === 'video' && cameraOff) return; // Skip video if camera is off
-          if (track.kind === 'audio' && muted) return; // Skip audio if muted
+      // Add local tracks
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach(track => {
+          if (track.kind === 'video' && cameraOff) return;
+          if (track.kind === 'audio' && muted) return;
           
-          console.log(`Adding local track: ${track.kind}`);
-          pc.addTrack(track, localStream.current);
+          addLog(`Adding local ${track.kind} track to ${userId}`);
+          pc.addTrack(track, localStreamRef.current);
         });
       }
+      
+      // Handle remote stream
+      pc.ontrack = (event) => {
+        addLog(`🎬 Received remote stream from ${userId}`);
+        
+        if (event.streams && event.streams[0]) {
+          setPeers(prev => {
+            const newPeers = { ...prev };
+            newPeers[userId] = event.streams[0];
+            return newPeers;
+          });
+        }
+      };
       
       // Handle ICE candidates
       pc.onicecandidate = (event) => {
@@ -384,37 +335,27 @@ export default function Meeting() {
         }
       };
       
-      // Handle remote stream
-      pc.ontrack = (event) => {
-        console.log(`🎬 Received remote track from ${userId}`);
-        
-        if (event.streams && event.streams[0]) {
-          setPeers(prev => ({
-            ...prev,
-            [userId]: event.streams[0]
-          }));
-        }
-      };
-      
       // Handle connection state
       pc.oniceconnectionstatechange = () => {
-        console.log(`ICE connection state with ${userId}: ${pc.iceConnectionState}`);
+        const state = pc.iceConnectionState;
+        addLog(`ICE state with ${userId}: ${state}`);
         
-        if (pc.iceConnectionState === "failed" || 
-            pc.iceConnectionState === "disconnected") {
-          console.log(`Connection with ${userId} failed, attempting restart...`);
+        if (state === 'connected') {
+          addLog(`✅ Successfully connected to ${userId}`);
+        } else if (state === 'failed' || state === 'disconnected') {
+          addLog(`⚠️ Connection issue with ${userId}: ${state}`);
           
           // Try to restart ICE
-          if (pc.restartIce) {
-            pc.restartIce();
+          if (state === 'failed') {
+            setTimeout(() => {
+              if (pc.restartIce) {
+                pc.restartIce();
+                addLog(`🔄 Restarting ICE with ${userId}`);
+              }
+            }, 2000);
           }
-        }
-        
-        if (pc.iceConnectionState === "closed") {
-          if (peerConnections.current[userId]) {
-            delete peerConnections.current[userId];
-          }
-          
+        } else if (state === 'closed') {
+          delete peerConnections.current[userId];
           setPeers(prev => {
             const newPeers = { ...prev };
             delete newPeers[userId];
@@ -427,6 +368,8 @@ export default function Meeting() {
       if (isInitiator) {
         setTimeout(async () => {
           try {
+            addLog(`Creating offer for ${userId}...`);
+            
             const offer = await pc.createOffer({
               offerToReceiveAudio: true,
               offerToReceiveVideo: true
@@ -438,191 +381,120 @@ export default function Meeting() {
               offer: pc.localDescription,
               to: userId
             });
+            
+            addLog(`📤 Sent offer to ${userId}`);
           } catch (err) {
-            console.error("❌ Error creating offer:", err);
+            addLog(`❌ Error creating offer: ${err.message}`);
           }
-        }, 1000);
+        }, 2000);
       }
       
       return pc;
     } catch (err) {
-      console.error("❌ Error creating peer connection:", err);
+      addLog(`❌ Error creating peer connection: ${err.message}`);
       return null;
     }
-  };
-  
+  }, [addLog, getRTCConfig, cameraOff, muted]);
+
+  // Initialize
+  useEffect(() => {
+    addLog(`=== Starting meeting room: ${id} ===`);
+    
+    // Connect socket
+    connectSocket();
+    
+    // Ping server every 30 seconds to keep connection alive
+    const pingInterval = setInterval(() => {
+      if (socketRef.current?.connected) {
+        socketRef.current.emit("ping");
+      }
+    }, 30000);
+    
+    // Cleanup
+    return () => {
+      addLog("🧹 Cleaning up...");
+      clearInterval(pingInterval);
+      
+      // Close all peer connections
+      Object.values(peerConnections.current).forEach(pc => {
+        if (pc) {
+          pc.close();
+        }
+      });
+      peerConnections.current = {};
+      
+      // Stop media
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach(track => track.stop());
+      }
+      
+      // Disconnect socket
+      if (socketRef.current) {
+        socketRef.current.disconnect();
+      }
+      
+      setPeers({});
+    };
+  }, [id, connectSocket, addLog]);
+
   // Toggle mute
   const toggleMute = () => {
-    if (localStream.current) {
-      const audioTracks = localStream.current.getAudioTracks();
-      if (audioTracks.length > 0) {
-        audioTracks.forEach(track => {
-          track.enabled = !track.enabled;
-        });
-        setMuted(!muted);
-      } else {
-        // No audio track - show message
-        setMediaError("No microphone available. You joined without audio.");
-      }
+    if (localStreamRef.current) {
+      const audioTracks = localStreamRef.current.getAudioTracks();
+      audioTracks.forEach(track => {
+        track.enabled = !track.enabled;
+      });
+      setMuted(!muted);
+      addLog(muted ? "🔊 Unmuted microphone" : "🔇 Muted microphone");
     }
   };
   
   // Toggle camera
   const toggleCamera = () => {
-    if (localStream.current) {
-      const videoTracks = localStream.current.getVideoTracks();
-      if (videoTracks.length > 0) {
-        videoTracks.forEach(track => {
-          track.enabled = !track.enabled;
-        });
-        setCameraOff(!cameraOff);
-      } else {
-        // No video track - show message
-        setMediaError("No camera available. You joined without video.");
-      }
-    }
-  };
-  
-  // Request permissions again
-  const requestPermissions = async () => {
-    setIsLoading(true);
-    setMediaError(null);
-    
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: true,
-        audio: true
+    if (localStreamRef.current) {
+      const videoTracks = localStreamRef.current.getVideoTracks();
+      videoTracks.forEach(track => {
+        track.enabled = !track.enabled;
       });
-      
-      // Replace old stream
-      if (localStream.current) {
-        localStream.current.getTracks().forEach(track => track.stop());
-      }
-      
-      localStream.current = stream;
-      localVideo.current.srcObject = stream;
-      
-      setHasMedia(true);
-      setCameraOff(false);
-      setMuted(false);
-      setMediaError(null);
-      
-      // Update tracks in all peer connections
-      Object.values(peerConnections.current).forEach(pc => {
-        const senders = pc.getSenders();
-        
-        // Update video track
-        const videoSender = senders.find(s => s.track?.kind === "video");
-        if (videoSender) {
-          const videoTrack = stream.getVideoTracks()[0];
-          if (videoTrack) {
-            videoSender.replaceTrack(videoTrack);
-          }
-        }
-        
-        // Update audio track
-        const audioSender = senders.find(s => s.track?.kind === "audio");
-        if (audioSender) {
-          const audioTrack = stream.getAudioTracks()[0];
-          if (audioTrack) {
-            audioSender.replaceTrack(audioTrack);
-          }
-        }
-      });
-      
-    } catch (err) {
-      console.error("❌ Permission request failed:", err);
-      setMediaError("Permission denied. You can continue without camera/microphone.");
-    } finally {
-      setIsLoading(false);
+      setCameraOff(!cameraOff);
+      addLog(cameraOff ? "📷 Turned camera ON" : "📷❌ Turned camera OFF");
     }
-  };
-  
-  // Screen share
-  const startScreenShare = async () => {
-    try {
-      if (sharingScreen) {
-        // Stop screen sharing
-        if (screenStreamRef.current) {
-          screenStreamRef.current.getTracks().forEach(track => track.stop());
-        }
-        
-        // Switch back to camera (if available)
-        if (localStream.current) {
-          localVideo.current.srcObject = localStream.current;
-          
-          Object.values(peerConnections.current).forEach(pc => {
-            const senders = pc.getSenders();
-            const videoSender = senders.find(s => s.track?.kind === "video");
-            if (videoSender && localStream.current) {
-              const videoTrack = localStream.current.getVideoTracks()[0];
-              if (videoTrack) {
-                videoSender.replaceTrack(videoTrack);
-              }
-            }
-          });
-        }
-        
-        setSharingScreen(false);
-      } else {
-        const screenStream = await navigator.mediaDevices.getDisplayMedia({
-          video: true
-        });
-        
-        screenStreamRef.current = screenStream;
-        localVideo.current.srcObject = screenStream;
-        setSharingScreen(true);
-        
-        Object.values(peerConnections.current).forEach(pc => {
-          const senders = pc.getSenders();
-          const videoSender = senders.find(s => s.track?.kind === "video");
-          if (videoSender) {
-            const screenTrack = screenStream.getVideoTracks()[0];
-            if (screenTrack) {
-              videoSender.replaceTrack(screenTrack);
-            }
-          }
-        });
-        
-        screenStream.getVideoTracks()[0].onended = () => {
-          if (sharingScreen) {
-            startScreenShare();
-          }
-        };
-      }
-    } catch (err) {
-      console.error("❌ Screen share error:", err);
-      setMediaError("Screen sharing cancelled or not available.");
-    }
-  };
-  
-  // Copy meeting ID
-  const copyMeetingId = () => {
-    navigator.clipboard.writeText(id);
-    alert("Meeting ID copied to clipboard!");
   };
   
   // Debug info
-  const logDebugInfo = () => {
+  const debugInfo = () => {
     console.log("=== DEBUG INFO ===");
     console.log("Socket ID:", socketRef.current?.id);
     console.log("Connected:", connected);
-    console.log("Has Media:", hasMedia);
-    console.log("Local Stream:", localStream.current);
-    console.log("Room users:", roomUsers);
-    console.log("Peer connections:", Object.keys(peerConnections.current));
+    console.log("Connection Status:", connectionStatus);
+    console.log("Local Stream:", localStreamRef.current);
+    console.log("Room Users:", roomUsers);
+    console.log("Peer Connections:", Object.keys(peerConnections.current));
     console.log("Peers:", Object.keys(peers));
-    console.log("Media Error:", mediaError);
-    console.log("===================");
+    console.log("==================");
   };
   
-  // Leave meeting
-  const leaveMeeting = () => {
-    if (window.confirm("Leave the meeting?")) {
-      navigate("/");
+  // Reconnect manually
+  const reconnect = () => {
+    addLog("🔄 Manual reconnection requested");
+    reconnectAttempts.current = 0;
+    
+    // Close existing socket
+    if (socketRef.current) {
+      socketRef.current.disconnect();
     }
+    
+    // Reconnect
+    setTimeout(() => {
+      connectSocket();
+    }, 500);
   };
-
+  
+  // Refresh page
+  const refreshPage = () => {
+    window.location.reload();
+  };
+  
   return (
     <div className="min-h-screen bg-gray-900 p-4">
       <div className="max-w-7xl mx-auto">
@@ -631,59 +503,100 @@ export default function Meeting() {
           <div className="text-white">
             <h1 className="text-2xl font-bold">Video Meeting</h1>
             <div className="flex items-center gap-2 mt-2">
-              <span className="text-gray-300">Meeting ID:</span>
+              <span className="text-gray-300">Room:</span>
               <span className="bg-gray-800 px-3 py-1 rounded-lg font-mono">{id}</span>
-              <button 
-                onClick={copyMeetingId}
-                className="ml-2 text-blue-400 hover:text-blue-300 hover:underline text-sm"
-              >
-                Copy
-              </button>
+              <div className={`ml-2 px-2 py-1 rounded text-xs ${
+                connectionStatus === 'connected' ? 'bg-green-600' :
+                connectionStatus === 'connecting' ? 'bg-yellow-600' :
+                connectionStatus === 'reconnecting' ? 'bg-yellow-600' :
+                'bg-red-600'
+              }`}>
+                {connectionStatus === 'connected' ? '🟢 Connected' :
+                 connectionStatus === 'connecting' ? '🟡 Connecting' :
+                 connectionStatus === 'reconnecting' ? '🟡 Reconnecting' :
+                 '🔴 Disconnected'}
+              </div>
             </div>
           </div>
           
           <div className="flex items-center gap-4">
             <div className="text-white bg-gray-800 px-4 py-2 rounded-lg">
               <span className="text-gray-300">Participants:</span>{" "}
-              <span className="font-bold">{participants}</span>
+              <span className="font-bold">{roomUsers.length + 1}</span>
             </div>
             <button 
-              onClick={logDebugInfo}
+              onClick={debugInfo}
               className="bg-gray-700 text-white px-4 py-2 rounded-lg hover:bg-gray-600 text-sm"
             >
               Debug
             </button>
+            <button 
+              onClick={reconnect}
+              className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 text-sm"
+            >
+              Reconnect
+            </button>
+            <button 
+              onClick={refreshPage}
+              className="bg-yellow-600 text-white px-4 py-2 rounded-lg hover:bg-yellow-700 text-sm"
+            >
+              Refresh
+            </button>
           </div>
         </div>
         
-        {/* Loading State */}
+        {/* Logs Panel */}
+        <div className="mb-4 bg-gray-800/50 rounded-lg p-3 max-h-32 overflow-y-auto">
+          <div className="flex justify-between items-center mb-2">
+            <div className="text-gray-400 text-sm">Connection Logs:</div>
+            <div className="flex gap-2">
+              <button 
+                onClick={() => setLogs([])}
+                className="text-xs bg-gray-700 hover:bg-gray-600 text-white px-2 py-1 rounded"
+              >
+                Clear
+              </button>
+              <span className="text-xs text-gray-400">
+                {connected ? '🟢' : '🔴'} {socketRef.current?.id?.slice(-6) || '...'}
+              </span>
+            </div>
+          </div>
+          {logs.map((log, index) => (
+            <div key={index} className="text-gray-300 text-xs font-mono truncate">
+              {log}
+            </div>
+          ))}
+        </div>
+        
+        {/* Loading */}
         {isLoading && (
           <div className="flex flex-col items-center justify-center h-64 rounded-xl bg-gray-800/50 mb-8">
             <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mb-4"></div>
-            <p className="text-gray-400">Setting up your meeting...</p>
-            <p className="text-gray-500 text-sm mt-2">Please allow camera/microphone access if prompted</p>
+            <p className="text-gray-400">Initializing video call...</p>
+            <p className="text-gray-500 text-sm mt-2">Please allow camera/microphone access</p>
           </div>
         )}
         
-        {/* Media Permission Error */}
-        {mediaError && !isLoading && (
-          <div className="bg-yellow-900/50 border border-yellow-700 text-yellow-200 px-4 py-3 rounded-lg mb-4">
-            <div className="flex items-start">
-              <span className="mr-2 text-xl">⚠️</span>
-              <div className="flex-1">
-                <p className="font-medium">{mediaError}</p>
-                <div className="flex gap-2 mt-2">
-                  <button
-                    onClick={requestPermissions}
-                    className="bg-yellow-600 hover:bg-yellow-700 text-white px-4 py-2 rounded text-sm"
+        {/* Connection Error */}
+        {!connected && !isLoading && (
+          <div className="mb-4 p-4 bg-red-900/50 border border-red-700 rounded-lg">
+            <div className="flex items-center gap-3">
+              <div className="text-2xl">⚠️</div>
+              <div>
+                <p className="text-red-200 font-medium">Connection lost</p>
+                <p className="text-red-300 text-sm mt-1">Trying to reconnect... ({reconnectAttempts.current}/{maxReconnectAttempts})</p>
+                <div className="flex gap-2 mt-3">
+                  <button 
+                    onClick={reconnect}
+                    className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded text-sm"
                   >
-                    Try Again
+                    Reconnect Now
                   </button>
-                  <button
-                    onClick={() => setMediaError(null)}
+                  <button 
+                    onClick={refreshPage}
                     className="bg-gray-700 hover:bg-gray-600 text-white px-4 py-2 rounded text-sm"
                   >
-                    Dismiss
+                    Refresh Page
                   </button>
                 </div>
               </div>
@@ -708,10 +621,9 @@ export default function Meeting() {
                   You (Me)
                   {muted && <span className="bg-red-600 px-2 py-1 rounded text-xs">MUTED</span>}
                   {cameraOff && <span className="bg-red-600 px-2 py-1 rounded text-xs">CAMERA OFF</span>}
-                  {sharingScreen && <span className="bg-green-600 px-2 py-1 rounded text-xs">SHARING</span>}
                 </p>
               </div>
-              {cameraOff && !sharingScreen && (
+              {cameraOff && (
                 <div className="absolute inset-0 flex items-center justify-center bg-gray-800">
                   <div className="text-center">
                     <span className="text-white text-4xl mb-2 block">📷❌</span>
@@ -736,14 +648,29 @@ export default function Meeting() {
                 />
                 <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-3">
                   <p className="text-white font-medium truncate">
-                    User {userId.slice(-6)}
+                    User {userId.slice(-4)}
                   </p>
                 </div>
               </div>
             ))}
             
+            {/* No connections yet */}
+            {connected && roomUsers.length > 0 && Object.keys(peers).length === 0 && (
+              <div className="col-span-1 sm:col-span-2 md:col-span-3 lg:col-span-3">
+                <div className="h-64 rounded-xl bg-gray-800/50 border-2 border-dashed border-gray-600 flex flex-col items-center justify-center">
+                  <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mb-4"></div>
+                  <p className="text-gray-400 text-center mb-2">
+                    Connecting to {roomUsers.length} participant{roomUsers.length > 1 ? 's' : ''}...
+                  </p>
+                  <p className="text-gray-500 text-sm text-center">
+                    Establishing WebRTC connection
+                  </p>
+                </div>
+              </div>
+            )}
+            
             {/* No other participants */}
-            {roomUsers.length === 0 && Object.keys(peers).length === 0 && (
+            {connected && roomUsers.length === 0 && Object.keys(peers).length === 0 && (
               <div className="col-span-1 sm:col-span-2 md:col-span-3 lg:col-span-3">
                 <div className="h-64 rounded-xl bg-gray-800/50 border-2 border-dashed border-gray-600 flex flex-col items-center justify-center">
                   <span className="text-4xl mb-4">👤</span>
@@ -751,7 +678,7 @@ export default function Meeting() {
                     You're the only one here
                   </p>
                   <p className="text-gray-500 text-sm text-center">
-                    Share the meeting link with others
+                    Share this room ID: <code className="bg-gray-700 px-2 py-1 rounded">{id}</code>
                   </p>
                 </div>
               </div>
@@ -764,79 +691,44 @@ export default function Meeting() {
           <div className="fixed bottom-8 left-1/2 transform -translate-x-1/2 flex gap-3 bg-gray-800/90 backdrop-blur-lg px-5 py-3 rounded-2xl shadow-xl z-50">
             <button 
               onClick={toggleMute}
-              className={`px-4 py-3 rounded-xl flex flex-col items-center justify-center transition-all ${muted ? 'bg-red-600 hover:bg-red-700' : 'bg-gray-700 hover:bg-gray-600'}`}
+              disabled={!connected}
+              className={`px-4 py-3 rounded-xl flex flex-col items-center justify-center transition-all ${
+                !connected ? 'bg-gray-800 cursor-not-allowed' :
+                muted ? 'bg-red-600 hover:bg-red-700' : 'bg-gray-700 hover:bg-gray-600'
+              }`}
               title={muted ? "Unmute microphone" : "Mute microphone"}
             >
-              <span className="text-white text-xl">
-                {muted ? '🔇' : '🎤'}
-              </span>
-              <span className="text-white text-xs mt-1">
-                {muted ? 'Unmute' : 'Mute'}
-              </span>
+              <span className="text-white text-xl">{muted ? '🔇' : '🎤'}</span>
+              <span className="text-white text-xs mt-1">{muted ? 'Unmute' : 'Mute'}</span>
             </button>
             
             <button 
               onClick={toggleCamera}
-              className={`px-4 py-3 rounded-xl flex flex-col items-center justify-center transition-all ${cameraOff ? 'bg-red-600 hover:bg-red-700' : 'bg-gray-700 hover:bg-gray-600'}`}
+              disabled={!connected}
+              className={`px-4 py-3 rounded-xl flex flex-col items-center justify-center transition-all ${
+                !connected ? 'bg-gray-800 cursor-not-allowed' :
+                cameraOff ? 'bg-red-600 hover:bg-red-700' : 'bg-gray-700 hover:bg-gray-600'
+              }`}
               title={cameraOff ? "Turn camera on" : "Turn camera off"}
             >
-              <span className="text-white text-xl">
-                {cameraOff ? '📷❌' : '📷'}
-              </span>
-              <span className="text-white text-xs mt-1">
-                {cameraOff ? 'Camera On' : 'Camera Off'}
-              </span>
+              <span className="text-white text-xl">{cameraOff ? '📷❌' : '📷'}</span>
+              <span className="text-white text-xs mt-1">{cameraOff ? 'Camera On' : 'Camera Off'}</span>
             </button>
-            
-            <button 
-              onClick={startScreenShare}
-              className={`px-4 py-3 rounded-xl flex flex-col items-center justify-center transition-all ${sharingScreen ? 'bg-red-600 hover:bg-red-700' : 'bg-gray-700 hover:bg-gray-600'}`}
-              title={sharingScreen ? "Stop screen sharing" : "Share screen"}
-            >
-              <span className="text-white text-xl">
-                {sharingScreen ? '🖥️⏹️' : '🖥️'}
-              </span>
-              <span className="text-white text-xs mt-1">
-                {sharingScreen ? 'Stop Share' : 'Share'}
-              </span>
-            </button>
-            
-            {!hasMedia && (
-              <button 
-                onClick={requestPermissions}
-                className="px-4 py-3 rounded-xl flex flex-col items-center justify-center bg-yellow-600 hover:bg-yellow-700 transition-all"
-                title="Request camera/microphone access"
-              >
-                <span className="text-white text-xl">
-                  🔄
-                </span>
-                <span className="text-white text-xs mt-1">
-                  Request Access
-                </span>
-              </button>
-            )}
             
             <div className="w-px bg-gray-600 mx-1"></div>
             
             <button 
-              onClick={leaveMeeting}
+              onClick={() => {
+                if (window.confirm("Leave the meeting?")) {
+                  navigate("/");
+                }
+              }}
               className="px-4 py-3 rounded-xl flex flex-col items-center justify-center bg-red-600 hover:bg-red-700 transition-all"
               title="Leave meeting"
             >
-              <span className="text-white text-xl">
-                📞
-              </span>
-              <span className="text-white text-xs mt-1">
-                Leave
-              </span>
+              <span className="text-white text-xl">📞</span>
+              <span className="text-white text-xs mt-1">Leave</span>
             </button>
-          </div>
-        )}
-        
-        {/* Connection Status */}
-        {!connected && !isLoading && (
-          <div className="fixed top-4 right-4 bg-red-600 text-white px-4 py-2 rounded-lg shadow-lg">
-            Disconnected from server
           </div>
         )}
       </div>
