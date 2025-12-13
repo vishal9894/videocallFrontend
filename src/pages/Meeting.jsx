@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import io from "socket.io-client";
+const BASE_URL = import.meta.env.VITE_API_URL;
+
 
 export default function Meeting() {
   const { id } = useParams();
@@ -43,7 +45,7 @@ export default function Meeting() {
     setIsLoading(true);
     
     // Initialize socket first (don't wait for media)
-    socketRef.current = io("http://localhost:5000", {
+    socketRef.current = io( BASE_URL, {
       transports: ['websocket', 'polling'],
       reconnection: true,
       reconnectionAttempts: 5
