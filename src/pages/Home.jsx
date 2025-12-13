@@ -1,9 +1,8 @@
 import { useState } from "react";
 import axios from "axios";
 import { useNavigate } from "react-router-dom";
-import { CopyToClipboard } from "react-copy-to-clipboard";
-const BASE_URL = import.meta.env.VITE_API_URL;
 
+const BASE_URL = import.meta.env.VITE_API_URL;
 
 export default function Home() {
   const [meetingId, setMeetingId] = useState("");
@@ -13,7 +12,7 @@ export default function Home() {
   const [joinLoading, setJoinLoading] = useState(false);
   const navigate = useNavigate();
 
-  console.log(BASE_URL , "base url");
+  console.log(BASE_URL, "base url");
 
   const createMeeting = async () => {
     setLoading(true);
@@ -40,7 +39,6 @@ export default function Home() {
     
     setJoinLoading(true);
     try {
-      // Check if meeting exists
       const res = await axios.post(`${BASE_URL}/api/meeting/join/${meetingId}`);
       
       if (res.data.success) {
@@ -60,9 +58,41 @@ export default function Home() {
     }
   };
 
-  const handleCopy = () => {
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  // Native clipboard copy function
+  const copyToClipboard = async (text) => {
+    try {
+      // Modern clipboard API
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error("Failed to copy using modern API:", err);
+      
+      // Fallback for older browsers
+      try {
+        const textArea = document.createElement("textarea");
+        textArea.value = text;
+        textArea.style.position = "fixed";
+        textArea.style.left = "-999999px";
+        textArea.style.top = "-999999px";
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        
+        const successful = document.execCommand("copy");
+        if (successful) {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 2000);
+        } else {
+          alert("Failed to copy. Please copy manually: " + text);
+        }
+        
+        document.body.removeChild(textArea);
+      } catch (fallbackErr) {
+        console.error("Fallback copy failed:", fallbackErr);
+        alert("Failed to copy to clipboard. Please copy manually: " + text);
+      }
+    }
   };
 
   const handleEnterKey = (e) => {
@@ -111,14 +141,15 @@ export default function Home() {
           </button>
 
           {generatedId && (
-            <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 space-y-3 animate-fadeIn">
+            <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <span className="text-gray-700 font-medium">Meeting ID:</span>
-                <CopyToClipboard text={generatedId} onCopy={handleCopy}>
-                  <button className="text-sm bg-gray-200 hover:bg-gray-300 text-gray-800 px-3 py-1 rounded-lg transition-colors">
-                    {copied ? "Copied!" : "Copy"}
-                  </button>
-                </CopyToClipboard>
+                <button 
+                  onClick={() => copyToClipboard(generatedId)}
+                  className="text-sm bg-gray-200 hover:bg-gray-300 text-gray-800 px-3 py-1 rounded-lg transition-colors"
+                >
+                  {copied ? "Copied!" : "Copy"}
+                </button>
               </div>
               <div className="flex items-center justify-between">
                 <code className="font-mono text-lg font-bold text-indigo-600 bg-indigo-50 px-3 py-2 rounded-lg flex-1 text-center">
