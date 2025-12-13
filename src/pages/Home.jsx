@@ -14,7 +14,6 @@ export default function Home() {
   const navigate = useNavigate();
 
   console.log(BASE_URL , "base url");
-  
 
   const createMeeting = async () => {
     setLoading(true);
