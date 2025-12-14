@@ -1,5 +1,4 @@
-
-import { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import io from "socket.io-client";
 import {
@@ -8,906 +7,402 @@ import {
   Video,
   VideoOff,
   Phone,
-  RefreshCw,
-  Users,
   Copy,
-  ScreenShare,
-  Settings,
   User,
-  ChevronLeft,
-  Wifi,
-  Volume2,
-  Crown,
-  Sparkles,
-  Grid3x3,
-  LayoutGrid,
-  Shield,
+  AlertCircle
 } from "lucide-react";
 
-const BASE_URL = import.meta.env.VITE_API_URL;
+const socket = io("http://localhost:5000");
 
-export default function Meeting() {
+const Meeting = () => {
   const { id } = useParams();
   const navigate = useNavigate();
 
-  const localVideo = useRef(null);
-  const remoteVideosRef = useRef({});
-  const peerConnections = useRef({});
-  const socketRef = useRef(null);
-  const localStreamRef = useRef(null);
-  const screenStreamRef = useRef(null);
+  const localVideoRef = useRef(null);
+  const remoteVideoRef = useRef(null);
 
-  const [peers, setPeers] = useState({});
-  const [muted, setMuted] = useState(false);
-  const [cameraOff, setCameraOff] = useState(false);
-  const [screenSharing, setScreenSharing] = useState(false);
-  const [status, setStatus] = useState("connecting");
-  const [participants, setParticipants] = useState(1);
-  const [showSettings, setShowSettings] = useState(false);
-  const [showParticipants, setShowParticipants] = useState(false);
-  const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
-  const [showControls, setShowControls] = useState(true);
-  const [activeSpeaker, setActiveSpeaker] = useState(null);
-  const [videoLayout, setVideoLayout] = useState("grid"); // grid, sideBySide, spotlight
+  const [localStream, setLocalStream] = useState(null);
+  const [remoteStream, setRemoteStream] = useState(null);
+  const [isMicOn, setIsMicOn] = useState(true);
+  const [isVideoOn, setIsVideoOn] = useState(true);
+  const [isConnected, setIsConnected] = useState(false);
+  const [error, setError] = useState(null);
 
-  // Detect mobile
+  const peerConnection = useRef(null);
+
   useEffect(() => {
-    const handleResize = () => setIsMobile(window.innerWidth < 768);
-    window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
-  }, []);
-
-  // Auto-hide controls on mobile
-  useEffect(() => {
-    if (!isMobile) return;
-
-    let timer;
-    const resetTimer = () => {
-      clearTimeout(timer);
-      setShowControls(true);
-      timer = setTimeout(() => setShowControls(false), 3000);
-    };
-
-    resetTimer();
-
-    const events = ["mousedown", "mousemove", "touchstart", "touchmove"];
-    events.forEach((event) => window.addEventListener(event, resetTimer));
+    initializeMedia();
 
     return () => {
-      clearTimeout(timer);
-      events.forEach((event) => window.removeEventListener(event, resetTimer));
+      cleanup();
     };
-  }, [isMobile]);
+  }, [id]);
 
-  // Helpers
-  const closePeer = (userId) => {
+  const initializeMedia = async () => {
     try {
-      const pc = peerConnections.current[userId];
-      if (pc) pc.close();
-    } catch {}
-    delete peerConnections.current[userId];
+      console.log("Initializing media...");
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: true,
+        audio: true
+      });
 
-    setPeers((prev) => {
-      const next = { ...prev };
-      delete next[userId];
-      return next;
-    });
+      console.log("Got media stream");
+      setLocalStream(stream);
 
-    delete remoteVideosRef.current[userId];
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = stream;
+      }
+
+      // Join room after getting media
+      socket.emit("join-room", id);
+      setupSocketListeners();
+
+    } catch (err) {
+      console.error("Error accessing media:", err);
+      setError("Could not access camera/microphone. Please check permissions.");
+    }
   };
 
-  const createPeerConnection = (userId, isInitiator) => {
-    if (peerConnections.current[userId]) return peerConnections.current[userId];
-
-    const pc = new RTCPeerConnection({
-      iceServers: [
-        { urls: "stun:stun.l.google.com:19302" },
-        { urls: "stun:global.stun.twilio.com:3478" },
-      ],
-    });
-
-    peerConnections.current[userId] = pc;
-
-    // Add local tracks
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((track) => {
-        pc.addTrack(track, localStreamRef.current);
-      });
-    }
-
-    pc.ontrack = (event) => {
-      const [stream] = event.streams;
-      if (!stream) return;
-
-      setPeers((prev) => ({
-        ...prev,
-        [userId]: stream,
-      }));
-    };
-
-    pc.onicecandidate = (event) => {
-      if (!event.candidate || !socketRef.current) return;
-
-      socketRef.current.emit("signal", {
-        to: userId,
-        type: "candidate",
-        payload: event.candidate,
-      });
-    };
-
-    // Optional: basic connection logs (helps debug)
-    pc.onconnectionstatechange = () => {
-      // console.log("PC state", userId, pc.connectionState);
-    };
-
-    // IMPORTANT FIX:
-    // Only ONE side should create offer to avoid "glare".
-    if (isInitiator) {
-      setTimeout(async () => {
-        try {
-          const offer = await pc.createOffer({
-            offerToReceiveAudio: true,
-            offerToReceiveVideo: true,
-          });
-          await pc.setLocalDescription(offer);
-
-          socketRef.current?.emit("signal", {
-            to: userId,
-            type: "offer",
-            payload: pc.localDescription,
-          });
-        } catch (err) {
-          console.warn("Offer error:", err);
-        }
-      }, 300);
-    }
-
-    return pc;
-  };
-
-  // Initialize socket + media
-  useEffect(() => {
-    console.log("🎬 Starting meeting:", id);
-
-    socketRef.current = io(BASE_URL, { transports: ["websocket"] });
-    const socket = socketRef.current;
-
-    socket.on("connect", async () => {
-      console.log("✅ Connected:", socket.id);
-      setStatus("connected");
-
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            width: { ideal: isMobile ? 640 : 1280 },
-            height: { ideal: isMobile ? 480 : 720 },
-            frameRate: { ideal: 24 },
-            facingMode: "user",
-          },
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-          },
+  const setupSocketListeners = () => {
+    socket.on("existing-users", (otherUsers) => {
+      console.log("Existing users in room:", otherUsers);
+      if (otherUsers.length > 0 && localStream) {
+        // Create peer connection for each existing user
+        otherUsers.forEach(userId => {
+          createPeerConnection(userId);
         });
-
-        localStreamRef.current = stream;
-
-        if (localVideo.current) {
-          localVideo.current.srcObject = stream;
-          localVideo.current.muted = true;
-          // Needed on some mobile browsers
-          localVideo.current.play?.().catch(() => {});
-        }
-
-        socket.emit("join-room", id);
-      } catch (err) {
-        console.error("Media error:", err);
-        alert("Please allow camera and microphone access.");
-        navigate("/");
       }
     });
 
-    // You are the NEW joiner here -> YOU initiate offers to existing users
-    socket.on("existing-users", (userIds) => {
-      console.log("👥 Existing users:", userIds);
-      setParticipants(userIds.length + 1);
-
-      userIds.forEach((userId) => createPeerConnection(userId, true));
-    });
-
-    // You are an EXISTING user here -> DO NOT initiate (wait for offer)
     socket.on("user-joined", (userId) => {
-      console.log("🆕 New user:", userId);
-      setParticipants((prev) => prev + 1);
-
-      createPeerConnection(userId, false);
+      console.log("New user joined:", userId);
+      if (localStream) {
+        createPeerConnection(userId);
+      }
     });
 
     socket.on("user-left", (userId) => {
-      console.log("👋 User left:", userId);
-      setParticipants((prev) => Math.max(1, prev - 1));
-      if (activeSpeaker === userId) setActiveSpeaker(null);
-      closePeer(userId);
+      console.log("User left:", userId);
+      setIsConnected(false);
+      setRemoteStream(null);
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = null;
+      }
     });
 
     socket.on("signal", async (data) => {
-      const { from, type, payload } = data;
+      console.log("Received signal from:", data.from, "type:", data.signal.type || "candidate");
+
+      if (!peerConnection.current) {
+        await createPeerConnection(data.from);
+      }
 
       try {
-        switch (type) {
-          case "offer": {
-            let pc = peerConnections.current[from];
-            if (!pc) pc = createPeerConnection(from, false);
+        if (data.signal.type === 'offer') {
+          await peerConnection.current.setRemoteDescription(new RTCSessionDescription(data.signal));
+          const answer = await peerConnection.current.createAnswer();
+          await peerConnection.current.setLocalDescription(answer);
 
-            await pc.setRemoteDescription(payload);
-            const answer = await pc.createAnswer();
-            await pc.setLocalDescription(answer);
+          socket.emit("signal", {
+            to: data.from,
+            signal: peerConnection.current.localDescription
+          });
 
-            socket.emit("signal", {
-              to: from,
-              type: "answer",
-              payload: pc.localDescription,
-            });
-            break;
-          }
+        } else if (data.signal.type === 'answer') {
+          await peerConnection.current.setRemoteDescription(new RTCSessionDescription(data.signal));
 
-          case "answer": {
-            const pc = peerConnections.current[from];
-            if (pc) await pc.setRemoteDescription(payload);
-            break;
-          }
-
-          case "candidate": {
-            const pc = peerConnections.current[from];
-            if (pc && payload) await pc.addIceCandidate(payload);
-            break;
-          }
-
-          default:
-            break;
+        } else if (data.signal.candidate) {
+          await peerConnection.current.addIceCandidate(new RTCIceCandidate(data.signal));
         }
       } catch (err) {
-        console.warn("Signal error:", err);
+        console.error("Error handling signal:", err);
       }
     });
 
-    socket.on("disconnect", () => setStatus("disconnected"));
-
-    return () => {
-      Object.values(peerConnections.current).forEach((pc) => {
-        try {
-          pc.close();
-        } catch {}
-      });
-      peerConnections.current = {};
-
-      if (localStreamRef.current) {
-        localStreamRef.current.getTracks().forEach((track) => track.stop());
-        localStreamRef.current = null;
-      }
-
-      if (screenStreamRef.current) {
-        screenStreamRef.current.getTracks().forEach((track) => track.stop());
-        screenStreamRef.current = null;
-      }
-
-      socketRef.current?.disconnect();
-      socketRef.current = null;
-    };
-  }, [id, navigate, isMobile, activeSpeaker]);
-
-  const toggleMute = () => {
-    const audioTrack = localStreamRef.current?.getAudioTracks()[0];
-    if (!audioTrack) return;
-
-    const next = !muted;
-    audioTrack.enabled = !next; // if muted=true -> enabled=false
-    setMuted(next);
+    socket.on("error", (errorData) => {
+      console.error("Socket error:", errorData);
+      setError(errorData.message);
+    });
   };
 
-  const toggleCamera = () => {
-    const videoTrack = localStreamRef.current?.getVideoTracks()[0];
-    if (!videoTrack) return;
+  const createPeerConnection = (targetUserId) => {
+    console.log("Creating peer connection for:", targetUserId);
 
-    const next = !cameraOff;
-    videoTrack.enabled = !next;
-    setCameraOff(next);
-  };
-
-  const toggleScreenShare = async () => {
     try {
-      // Stop sharing -> restore camera track to all peers
-      if (screenSharing) {
-        screenStreamRef.current?.getTracks().forEach((t) => t.stop());
-        screenStreamRef.current = null;
-
-        // restore local preview
-        if (localStreamRef.current && localVideo.current) {
-          localVideo.current.srcObject = localStreamRef.current;
-          localVideo.current.play?.().catch(() => {});
-        }
-
-        // restore outgoing video track
-        const cameraTrack = localStreamRef.current?.getVideoTracks()[0];
-        Object.values(peerConnections.current).forEach((pc) => {
-          const sender = pc.getSenders().find((s) => s.track?.kind === "video");
-          if (sender && cameraTrack) sender.replaceTrack(cameraTrack);
-        });
-
-        setScreenSharing(false);
-        return;
+      // Close existing connection if any
+      if (peerConnection.current) {
+        peerConnection.current.close();
       }
 
-      // Start sharing
-      const screenStream = await navigator.mediaDevices.getDisplayMedia({
-        video: {
-          frameRate: { ideal: 30 },
-          width: { max: 1920 },
-          height: { max: 1080 },
-        },
-        audio: false,
-      });
-
-      screenStreamRef.current = screenStream;
-
-      if (localVideo.current) {
-        localVideo.current.srcObject = screenStream;
-        localVideo.current.play?.().catch(() => {});
-      }
-
-      const screenTrack = screenStream.getVideoTracks()[0];
-      Object.values(peerConnections.current).forEach((pc) => {
-        const sender = pc.getSenders().find((s) => s.track?.kind === "video");
-        if (sender && screenTrack) sender.replaceTrack(screenTrack);
-      });
-
-      setScreenSharing(true);
-
-      screenTrack.onended = () => {
-        // when user stops via browser UI
-        setScreenSharing(false);
-
-        // restore camera
-        const cameraTrack = localStreamRef.current?.getVideoTracks()[0];
-        if (localStreamRef.current && localVideo.current) {
-          localVideo.current.srcObject = localStreamRef.current;
-          localVideo.current.play?.().catch(() => {});
-        }
-        Object.values(peerConnections.current).forEach((pc) => {
-          const sender = pc.getSenders().find((s) => s.track?.kind === "video");
-          if (sender && cameraTrack) sender.replaceTrack(cameraTrack);
-        });
+      const config = {
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' },
+          { urls: 'stun:stun2.l.google.com:19302' },
+          { urls: 'stun:stun3.l.google.com:19302' },
+          { urls: 'stun:stun4.l.google.com:19302' }
+        ]
       };
+
+      const pc = new RTCPeerConnection(config);
+      peerConnection.current = pc;
+
+      // Add local tracks
+      if (localStream) {
+        localStream.getTracks().forEach(track => {
+          pc.addTrack(track, localStream);
+          console.log("Added local track:", track.kind);
+        });
+      }
+
+      // Handle remote stream
+      pc.ontrack = (event) => {
+        console.log("Received remote track:", event.track.kind);
+        if (event.streams && event.streams[0]) {
+          setRemoteStream(event.streams[0]);
+          if (remoteVideoRef.current) {
+            remoteVideoRef.current.srcObject = event.streams[0];
+          }
+          setIsConnected(true);
+          setError(null);
+        }
+      };
+
+      // Handle ICE candidates
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
+          console.log("Sending ICE candidate to:", targetUserId);
+          socket.emit("signal", {
+            to: targetUserId,
+            signal: event.candidate
+          });
+        }
+      };
+
+      pc.oniceconnectionstatechange = () => {
+        console.log("ICE connection state:", pc.iceConnectionState);
+        if (pc.iceConnectionState === 'disconnected' ||
+          pc.iceConnectionState === 'failed' ||
+          pc.iceConnectionState === 'closed') {
+          setIsConnected(false);
+        }
+      };
+
+      pc.onsignalingstatechange = () => {
+        console.log("Signaling state:", pc.signalingState);
+      };
+
+      // If we're initiating, create an offer
+      if (localStream && pc.signalingState === 'stable') {
+        pc.createOffer()
+          .then(offer => {
+            console.log("Created offer, setting local description");
+            return pc.setLocalDescription(offer);
+          })
+          .then(() => {
+            console.log("Sending offer to:", targetUserId);
+            socket.emit("signal", {
+              to: targetUserId,
+              signal: pc.localDescription
+            });
+          })
+          .catch(err => console.error("Error creating offer:", err));
+      }
+
+      return pc;
+
     } catch (err) {
-      console.warn("Screen share error:", err);
+      console.error("Error creating peer connection:", err);
+      setError("Failed to establish connection");
     }
   };
 
-  const copyMeetingId = () => {
+  const toggleMic = () => {
+    if (localStream) {
+      const audioTrack = localStream.getAudioTracks()[0];
+      if (audioTrack) {
+        audioTrack.enabled = !audioTrack.enabled;
+        setIsMicOn(audioTrack.enabled);
+      }
+    }
+  };
+
+  const toggleVideo = () => {
+    if (localStream) {
+      const videoTrack = localStream.getVideoTracks()[0];
+      if (videoTrack) {
+        videoTrack.enabled = !videoTrack.enabled;
+        setIsVideoOn(videoTrack.enabled);
+      }
+    }
+  };
+
+  const copyMeetingCode = () => {
     navigator.clipboard.writeText(id);
-    alert("Meeting ID copied to clipboard!");
+    alert("Meeting code copied!");
+  };
+
+  const cleanup = () => {
+    if (localStream) {
+      localStream.getTracks().forEach(track => track.stop());
+    }
+    if (peerConnection.current) {
+      peerConnection.current.close();
+    }
+    socket.emit("leave-room", id);
+    socket.disconnect();
   };
 
   const leaveMeeting = () => {
-    if (window.confirm("Leave this meeting?")) navigate("/");
-  };
-
-  const reconnect = () => window.location.reload();
-
-  const renderVideoLayout = () => {
-    const peerCount = Object.keys(peers).length;
-    const totalParticipants = peerCount + 1;
-
-    if (totalParticipants === 0) return null;
-
-    // For 2 participants: side-by-side (desktop)
-    if (totalParticipants === 2 && !isMobile) {
-      return (
-        <div className="flex-1 flex flex-col md:flex-row gap-4 md:gap-6 p-4">
-          {/* Local Video */}
-          <div className="flex-1 relative group">
-            <div className="h-full bg-gray-900 rounded-2xl overflow-hidden shadow-2xl">
-              <video
-                ref={localVideo}
-                autoPlay
-                muted
-                playsInline
-                className="w-full h-full object-cover"
-              />
-              <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent">
-                <div className="absolute top-4 left-4 flex items-center gap-2 bg-black/60 backdrop-blur-sm px-3 py-1.5 rounded-full">
-                  <Crown size={16} className="text-amber-400" />
-                  <span className="font-medium text-sm">You (Host)</span>
-                  {muted && <MicOff size={14} className="text-rose-400 ml-2" />}
-                  {cameraOff && <VideoOff size={14} className="text-rose-400" />}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Remote Video */}
-          {Object.entries(peers).map(([userId, stream]) => (
-            <div key={userId} className="flex-1 relative group">
-              <div className="h-full bg-gray-900 rounded-2xl overflow-hidden shadow-2xl">
-                <video
-                  autoPlay
-                  playsInline
-                  className="w-full h-full object-cover"
-                  ref={(el) => {
-                    if (el && stream) el.srcObject = stream;
-                    remoteVideosRef.current[userId] = el;
-                  }}
-                />
-                <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent">
-                  <div className="absolute top-4 left-4 flex items-center gap-2 bg-black/60 backdrop-blur-sm px-3 py-1.5 rounded-full">
-                    <User size={16} className="text-blue-400" />
-                    <span className="font-medium text-sm">
-                      User {userId.slice(-4)}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      );
-    }
-
-    // Grid
-    const gridCols = isMobile
-      ? "grid-cols-1"
-      : totalParticipants <= 4
-      ? "grid-cols-2"
-      : totalParticipants <= 9
-      ? "grid-cols-3"
-      : "grid-cols-4";
-
-    return (
-      <div className={`grid ${gridCols} gap-4 p-4`}>
-        {/* Local Video Card */}
-        <div className="relative group">
-          <div className="aspect-video bg-gray-900 rounded-xl overflow-hidden">
-            <video
-              ref={localVideo}
-              autoPlay
-              muted
-              playsInline
-              className="w-full h-full object-cover"
-            />
-            <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent">
-              <div className="absolute top-3 left-3 flex items-center gap-2 bg-black/60 backdrop-blur-sm px-2 py-1 rounded-full">
-                <Crown size={14} className="text-amber-400" />
-                <span className="text-xs font-medium">You</span>
-                {muted && <MicOff size={12} className="text-rose-400 ml-1" />}
-                {cameraOff && <VideoOff size={12} className="text-rose-400" />}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Remote Video Cards */}
-        {Object.entries(peers).map(([userId, stream]) => (
-          <div key={userId} className="relative group">
-            <div className="aspect-video bg-gray-900 rounded-xl overflow-hidden">
-              <video
-                autoPlay
-                playsInline
-                className="w-full h-full object-cover"
-                ref={(el) => {
-                  if (el && stream) el.srcObject = stream;
-                  remoteVideosRef.current[userId] = el;
-                }}
-              />
-              <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent">
-                <div className="absolute top-3 left-3 flex items-center gap-2 bg-black/60 backdrop-blur-sm px-2 py-1 rounded-full">
-                  <User size={14} className="text-blue-400" />
-                  <span className="text-xs font-medium">
-                    User {userId.slice(-4)}
-                  </span>
-                </div>
-              </div>
-            </div>
-          </div>
-        ))}
-      </div>
-    );
+    cleanup();
+    navigate("/");
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-900 to-black text-white relative overflow-hidden">
-      {/* Top Bar */}
-      <div className="flex justify-between items-center px-4 py-3 md:px-6 md:py-4 bg-gray-900/80 backdrop-blur-lg border-b border-gray-800 z-40 relative">
-        <div className="flex items-center gap-3">
-          {isMobile && (
-            <button
-              onClick={() => navigate("/")}
-              className="p-2 hover:bg-gray-800 rounded-lg transition-colors"
-            >
-              <ChevronLeft size={20} />
-            </button>
-          )}
-
-          <div className="flex items-center gap-2">
-            <div
-              className={`w-2 h-2 rounded-full ${
-                status === "connected"
-                  ? "bg-emerald-500 animate-pulse"
-                  : status === "connecting"
-                  ? "bg-amber-500 animate-pulse"
-                  : "bg-rose-500"
-              }`}
-            ></div>
-            <span className="text-sm font-medium hidden sm:inline">
-              {status === "connected"
-                ? "Connected"
-                : status === "connecting"
-                ? "Connecting..."
-                : "Disconnected"}
-            </span>
-          </div>
-        </div>
-
-        <div className="flex-1 flex justify-center">
-          <div className="flex items-center gap-2 bg-gray-800/60 px-4 py-2 rounded-lg backdrop-blur-sm">
-            <Sparkles size={14} className="text-amber-400" />
-            <span className="text-sm text-gray-300">Room:</span>
-            <code className="font-mono font-bold text-sm truncate max-w-[120px] md:max-w-none">
-              {id}
-            </code>
-            <button
-              onClick={copyMeetingId}
-              className="text-gray-400 hover:text-white transition-colors hover:scale-110 active:scale-95"
-            >
-              <Copy size={14} />
-            </button>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setShowParticipants(!showParticipants)}
-            className="p-2 hover:bg-gray-800 rounded-lg transition-colors relative"
-          >
-            <Users size={20} />
-            {participants > 1 && (
-              <span className="absolute -top-1 -right-1 bg-emerald-500 text-xs rounded-full w-5 h-5 flex items-center justify-center">
-                {participants}
-              </span>
-            )}
-          </button>
-
-          {!isMobile && participants > 2 && (
-            <div className="hidden md:flex items-center gap-1">
-              <button
-                onClick={() => setVideoLayout("grid")}
-                className={`p-2 rounded-lg ${
-                  videoLayout === "grid"
-                    ? "bg-blue-600"
-                    : "bg-gray-800 hover:bg-gray-700"
-                }`}
-              >
-                <Grid3x3 size={18} />
-              </button>
-              <button
-                onClick={() => setVideoLayout("sideBySide")}
-                className={`p-2 rounded-lg ${
-                  videoLayout === "sideBySide"
-                    ? "bg-blue-600"
-                    : "bg-gray-800 hover:bg-gray-700"
-                }`}
-              >
-                <LayoutGrid size={18} />
-              </button>
-            </div>
-          )}
-
-          <button
-            onClick={() => setShowSettings(!showSettings)}
-            className="p-2 hover:bg-gray-800 rounded-lg transition-colors"
-          >
-            <Settings size={20} />
-          </button>
-        </div>
-      </div>
-
-      {/* Main Video Area */}
-      <div className="h-[calc(100vh-140px)] md:h-[calc(100vh-160px)] overflow-y-auto">
-        {renderVideoLayout()}
-
-        {/* Empty State */}
-        {Object.keys(peers).length === 0 && status === "connected" && (
-          <div className="h-full flex flex-col items-center justify-center p-8">
-            <div className="max-w-lg text-center">
-              <div className="inline-block p-8 bg-gradient-to-br from-gray-800/50 to-gray-900/30 rounded-2xl border-2 border-gray-700/50 mb-8">
-                <Users size={80} className="text-gray-600 mx-auto mb-6" />
-                <h3 className="text-3xl font-bold mb-3">
-                  You're the only one here
-                </h3>
-                <p className="text-gray-400 text-lg mb-8">
-                  Invite others to join this meeting by sharing the ID below
-                </p>
-                <div className="flex flex-col sm:flex-row items-center gap-4 justify-center">
-                  <div className="bg-gray-800/70 px-6 py-4 rounded-xl">
-                    <code className="text-2xl font-mono font-bold">{id}</code>
-                  </div>
-                  <button
-                    onClick={copyMeetingId}
-                    className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 px-6 py-4 rounded-xl font-medium flex items-center gap-3 text-lg transition-all hover:scale-105 active:scale-95"
-                  >
-                    <Copy size={20} />
-                    Copy Meeting ID
-                  </button>
-                </div>
-              </div>
-              <p className="text-gray-500 text-sm">
-                Share this ID with others so they can join your meeting
-              </p>
+    <div className="min-h-screen bg-gray-900 text-white">
+      {/* Header */}
+      <div className="bg-gray-800 px-6 py-3 border-b border-gray-700">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <Video className="w-5 h-5 text-blue-400" />
+            <h1 className="text-xl font-bold">Video Call</h1>
+            <div className="flex items-center gap-2">
+              <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`}></div>
+              <span className="text-sm">{isConnected ? 'Connected' : 'Disconnected'}</span>
             </div>
           </div>
-        )}
-      </div>
 
-      {/* Participants Panel */}
-      {showParticipants && (
-        <div className="fixed inset-y-0 right-0 w-full md:w-80 bg-gray-900/95 backdrop-blur-xl border-l border-gray-800 z-50">
-          <div className="p-6 h-full overflow-y-auto">
-            <div className="flex justify-between items-center mb-6">
-              <h2 className="text-xl font-bold flex items-center gap-2">
-                <Users size={20} />
-                Participants ({participants})
-              </h2>
-              <button
-                onClick={() => setShowParticipants(false)}
-                className="p-2 hover:bg-gray-800 rounded-lg transition-colors"
-              >
-                ✕
-              </button>
-            </div>
-
-            <div className="space-y-3">
-              {/* Local User */}
-              <div className="flex items-center gap-3 p-3 bg-gray-800/50 hover:bg-gray-700/50 rounded-xl transition-colors">
-                <div className="relative">
-                  <div className="w-12 h-12 bg-gradient-to-br from-blue-600 to-indigo-600 rounded-full flex items-center justify-center">
-                    <User size={24} />
-                  </div>
-                  <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-emerald-500 rounded-full border-2 border-gray-900"></div>
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <p className="font-medium truncate">You (Host)</p>
-                    <Crown size={14} className="text-amber-400" />
-                  </div>
-                  <div className="flex items-center gap-2 text-sm text-gray-400">
-                    <div className="flex items-center gap-1">
-                      {muted ? (
-                        <>
-                          <MicOff size={12} className="text-rose-400" />
-                          <span>Muted</span>
-                        </>
-                      ) : (
-                        <>
-                          <Mic size={12} className="text-emerald-400" />
-                          <span>Speaking</span>
-                        </>
-                      )}
-                    </div>
-                    {cameraOff && (
-                      <>
-                        <span>•</span>
-                        <VideoOff size={12} className="text-rose-400" />
-                      </>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {/* Remote Users */}
-              {Object.entries(peers).map(([userId]) => (
-                <div
-                  key={userId}
-                  className="flex items-center gap-3 p-3 bg-gray-800/50 hover:bg-gray-700/50 rounded-xl transition-colors"
+          <div className="flex items-center gap-4">
+            <div className="text-center">
+              <p className="text-sm text-gray-400">Meeting ID</p>
+              <div className="flex items-center gap-2">
+                <code className="font-mono font-bold">{id}</code>
+                <button
+                  onClick={copyMeetingCode}
+                  className="p-1 hover:bg-gray-700 rounded"
+                  title="Copy meeting code"
                 >
-                  <div className="relative">
-                    <div className="w-12 h-12 bg-gradient-to-br from-purple-600 to-pink-600 rounded-full flex items-center justify-center">
-                      <User size={24} />
-                    </div>
-                    <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-emerald-500 rounded-full border-2 border-gray-900"></div>
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="font-medium truncate">User {userId.slice(-4)}</p>
-                    <div className="flex items-center gap-2 text-sm text-gray-400">
-                      <div className="flex items-center gap-1">
-                        <Volume2 size={12} className="text-emerald-400" />
-                        <span>Connected</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ))}
+                  <Copy className="w-4 h-4" />
+                </button>
+              </div>
             </div>
-          </div>
-        </div>
-      )}
-
-      {/* Control Bar */}
-      <div
-        className={`fixed ${
-          isMobile
-            ? showControls
-              ? "bottom-0 left-0 right-0 animate-slideUp"
-              : "bottom-0 left-0 right-0 -translate-y-full animate-slideDown"
-            : "bottom-6 left-1/2 transform -translate-x-1/2"
-        } transition-transform duration-300 z-40`}
-      >
-        <div
-          className={`flex items-center justify-center ${
-            isMobile
-              ? "bg-gradient-to-t from-gray-900 to-gray-900/95 backdrop-blur-xl px-4 py-4"
-              : "gap-3 bg-gray-900/90 backdrop-blur-xl px-6 py-4 rounded-2xl shadow-2xl border border-gray-800"
-          }`}
-        >
-          <div className="flex items-center gap-2 md:gap-4">
-            <button
-              onClick={toggleMute}
-              className={`p-3 md:p-4 rounded-full transition-all duration-300 ${
-                muted
-                  ? "bg-gradient-to-br from-rose-600 to-rose-700 hover:from-rose-700 hover:to-rose-800"
-                  : "bg-gray-800 hover:bg-gray-700"
-              }`}
-            >
-              {muted ? (
-                <MicOff size={isMobile ? 20 : 24} className="text-white" />
-              ) : (
-                <Mic size={isMobile ? 20 : 24} className="text-white" />
-              )}
-            </button>
-
-            <button
-              onClick={toggleCamera}
-              className={`p-3 md:p-4 rounded-full transition-all duration-300 ${
-                cameraOff
-                  ? "bg-gradient-to-br from-rose-600 to-rose-700 hover:from-rose-700 hover:to-rose-800"
-                  : "bg-gray-800 hover:bg-gray-700"
-              }`}
-            >
-              {cameraOff ? (
-                <VideoOff size={isMobile ? 20 : 24} className="text-white" />
-              ) : (
-                <Video size={isMobile ? 20 : 24} className="text-white" />
-              )}
-            </button>
-
-            <button
-              onClick={toggleScreenShare}
-              className={`p-3 md:p-4 rounded-full transition-all duration-300 ${
-                screenSharing
-                  ? "bg-gradient-to-br from-emerald-600 to-emerald-700 hover:from-emerald-700 hover:to-emerald-800"
-                  : "bg-gray-800 hover:bg-gray-700"
-              }`}
-            >
-              <ScreenShare size={isMobile ? 20 : 24} className="text-white" />
-            </button>
-
-            <button
-              onClick={leaveMeeting}
-              className={`${
-                isMobile ? "px-6 py-3" : "px-8 py-4"
-              } bg-gradient-to-br from-rose-600 to-rose-700 hover:from-rose-700 hover:to-rose-800 rounded-full font-medium flex items-center gap-2 transition-all duration-300 hover:scale-105 active:scale-95`}
-            >
-              <Phone size={20} className="rotate-135" />
-              <span className={isMobile ? "" : "font-semibold"}>Leave</span>
-            </button>
           </div>
         </div>
       </div>
 
-      {/* Settings Panel */}
-      {showSettings && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-gradient-to-b from-gray-900 to-gray-950 rounded-2xl max-w-md w-full max-h-[90vh] overflow-y-auto border border-gray-800">
-            <div className="flex justify-between items-center p-6 border-b border-gray-800">
-              <h2 className="text-xl font-bold flex items-center gap-2">
-                <Settings size={20} />
-                Settings
-              </h2>
-              <button
-                onClick={() => setShowSettings(false)}
-                className="p-2 hover:bg-gray-800 rounded-lg transition-colors"
-              >
-                ✕
-              </button>
+      {/* Error Display */}
+      {error && (
+        <div className="bg-red-900/50 border border-red-700 mx-4 mt-4 p-3 rounded-lg flex items-center gap-3">
+          <AlertCircle className="w-5 h-5 text-red-400" />
+          <span className="text-red-300">{error}</span>
+        </div>
+      )}
+
+      {/* Video Area */}
+      <div className="p-4 h-[calc(100vh-140px)]">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 h-full">
+          {/* Remote Video */}
+          <div className="relative rounded-xl overflow-hidden bg-gray-800 border border-gray-700 h-full">
+            {remoteStream ? (
+              <video
+                ref={remoteVideoRef}
+                autoPlay
+                playsInline
+                className="w-full h-full object-cover"
+              />
+            ) : (
+              <div className="absolute inset-0 flex flex-col items-center justify-center">
+                <div className="w-32 h-32 rounded-full bg-gray-700 flex items-center justify-center mb-4">
+                  <User className="w-16 h-16 text-gray-400" />
+                </div>
+                <h3 className="text-xl font-semibold mb-2">Waiting for participant</h3>
+                <p className="text-gray-400">No one has joined yet</p>
+              </div>
+            )}
+
+            <div className="absolute top-4 left-4 bg-black/60 backdrop-blur-sm px-3 py-2 rounded-lg">
+              <div className="flex items-center gap-2">
+                <User className="w-4 h-4" />
+                <span className="font-medium">Remote Participant</span>
+                {isConnected && (
+                  <div className="flex items-center gap-1">
+                    <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
+                    <span className="text-xs text-green-400">Live</span>
+                  </div>
+                )}
+              </div>
             </div>
+          </div>
 
-            <div className="p-6 space-y-6">
-              <div>
-                <h3 className="font-medium mb-3 flex items-center gap-2">
-                  <Wifi size={18} />
-                  Connection
-                </h3>
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between p-3 bg-gray-800/50 rounded-lg">
-                    <span className="text-sm">Status</span>
-                    <div className="flex items-center gap-2">
-                      <div
-                        className={`w-2 h-2 rounded-full ${
-                          status === "connected" ? "bg-emerald-500" : "bg-rose-500"
-                        }`}
-                      ></div>
-                      <span
-                        className={`text-sm ${
-                          status === "connected"
-                            ? "text-emerald-400"
-                            : "text-rose-400"
-                        }`}
-                      >
-                        {status.charAt(0).toUpperCase() + status.slice(1)}
-                      </span>
-                    </div>
-                  </div>
-                  <button
-                    onClick={reconnect}
-                    className="w-full p-3 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 rounded-lg flex items-center justify-center gap-2 transition-all"
-                  >
-                    <RefreshCw size={18} />
-                    Reconnect
-                  </button>
+          {/* Local Video */}
+          <div className="relative rounded-xl overflow-hidden bg-gray-800 border border-gray-700 h-full">
+            {isVideoOn ? (
+              <video
+                ref={localVideoRef}
+                autoPlay
+                muted
+                playsInline
+                className="w-full h-full object-cover"
+              />
+            ) : (
+              <div className="absolute inset-0 flex items-center justify-center bg-gray-900">
+                <div className="text-center">
+                  <VideoOff className="w-16 h-16 mx-auto text-gray-600 mb-4" />
+                  <p className="text-gray-400">Camera is off</p>
                 </div>
               </div>
+            )}
 
-              <div>
-                <h3 className="font-medium mb-3">Meeting Info</h3>
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between p-3 bg-gray-800/50 rounded-lg">
-                    <span className="text-sm">Meeting ID</span>
-                    <code className="font-mono">{id}</code>
-                  </div>
-                  <button
-                    onClick={copyMeetingId}
-                    className="w-full p-3 bg-gray-800 hover:bg-gray-700 rounded-lg flex items-center justify-center gap-2 transition-all"
-                  >
-                    <Copy size={18} />
-                    Copy Meeting ID
-                  </button>
-                </div>
-              </div>
-
-              <div className="pt-4 border-t border-gray-800">
-                <div className="flex items-center gap-2 text-sm text-gray-400">
-                  <Shield size={16} className="text-emerald-400" />
-                  <span>End-to-end encrypted • Premium quality</span>
+            <div className="absolute top-4 left-4 bg-black/60 backdrop-blur-sm px-3 py-2 rounded-lg">
+              <div className="flex items-center gap-2">
+                <User className="w-4 h-4 text-blue-400" />
+                <span className="font-medium">You</span>
+                <div className="flex items-center gap-1 ml-2">
+                  {!isMicOn && <MicOff className="w-3 h-3 text-red-400" />}
+                  {!isVideoOn && <VideoOff className="w-3 h-3 text-red-400" />}
                 </div>
               </div>
             </div>
           </div>
         </div>
-      )}
+      </div>
 
-      <style jsx>{`
-        @keyframes slideUp {
-          from {
-            transform: translateY(100%);
-          }
-          to {
-            transform: translateY(0);
-          }
-        }
-        @keyframes slideDown {
-          from {
-            transform: translateY(0);
-          }
-          to {
-            transform: translateY(100%);
-          }
-        }
-        .animate-slideUp {
-          animation: slideUp 0.3s ease-out;
-        }
-        .animate-slideDown {
-          animation: slideDown 0.3s ease-in;
-        }
-      `}</style>
+      {/* Controls */}
+      <div className="fixed bottom-0 left-0 right-0 bg-gray-800 border-t border-gray-700 px-6 py-4">
+        <div className="max-w-4xl mx-auto flex items-center justify-center gap-6">
+          <button
+            onClick={toggleMic}
+            className={`p-3 rounded-full ${isMicOn ? 'bg-gray-700 hover:bg-gray-600' : 'bg-red-500 hover:bg-red-600'}`}
+            title={isMicOn ? "Mute" : "Unmute"}
+          >
+            {isMicOn ? <Mic className="w-6 h-6" /> : <MicOff className="w-6 h-6" />}
+          </button>
+
+          <button
+            onClick={toggleVideo}
+            className={`p-3 rounded-full ${isVideoOn ? 'bg-gray-700 hover:bg-gray-600' : 'bg-red-500 hover:bg-red-600'}`}
+            title={isVideoOn ? "Stop Video" : "Start Video"}
+          >
+            {isVideoOn ? <Video className="w-6 h-6" /> : <VideoOff className="w-6 h-6" />}
+          </button>
+
+          <button
+            onClick={leaveMeeting}
+            className="p-3 rounded-full bg-red-600 hover:bg-red-700"
+            title="Leave Call"
+          >
+            <Phone className="w-6 h-6 rotate-135" />
+          </button>
+        </div>
+
+        <div className="text-center mt-3">
+          <span className="text-sm text-gray-400">
+            {isConnected ? "✅ Connected to remote user" : "⏳ Waiting for connection..."}
+          </span>
+        </div>
+      </div>
     </div>
   );
-}
+};
+
+export default Meeting;

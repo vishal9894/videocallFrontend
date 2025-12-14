@@ -1,268 +1,251 @@
-import { useState } from "react";
-import axios from "axios";
+import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { v4 as uuidv4 } from "uuid";
+import { 
+  Video, 
+  Users, 
+  Copy, 
+  Check,
+  LogIn,
+  PlusCircle,
+  Shield,
+  Zap,
+  X
+} from "lucide-react";
 
-const BASE_URL = import.meta.env.VITE_API_URL;
+const Home = () => {
+    const navigate = useNavigate();
+    const [copied, setCopied] = useState(false);
+    const [codeInput, setCodeInput] = useState("");
+    const [isLoading, setIsLoading] = useState(false);
+    const [generatedCode, setGeneratedCode] = useState("");
+    const [showCodeModal, setShowCodeModal] = useState(false);
 
-export default function Home() {
-  const [meetingId, setMeetingId] = useState("");
-  const [generatedId, setGeneratedId] = useState("");
-  const [copied, setCopied] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [joinLoading, setJoinLoading] = useState(false);
-  const navigate = useNavigate();
+    const createMeeting = async () => {
+        setIsLoading(true);
+        const code = uuidv4().split("-")[0].toUpperCase();
+        setGeneratedCode(code);
+        setShowCodeModal(true);
+        setIsLoading(false);
+    };
 
-  console.log(BASE_URL, "base url");
+    const copyToClipboard = async () => {
+        try {
+            await navigator.clipboard.writeText(generatedCode);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+        } catch (error) {
+            console.error("Failed to copy:", error);
+        }
+    };
 
-  const createMeeting = async () => {
-    setLoading(true);
-    try {
-      const res = await axios.post(`${BASE_URL}/api/meeting/create`);
-      if (res.data.success) {
-        setGeneratedId(res.data.meetingId);
-      } else {
-        alert("Failed to create meeting");
-      }
-    } catch (err) {
-      console.error(err);
-      alert("Failed to create meeting. Please try again.");
-    } finally {
-      setLoading(false);
-    }
-  };
+    const startMeeting = () => {
+        navigate(`/meeting/${generatedCode}`);
+    };
 
-  const joinMeeting = async () => {
-    if (!meetingId.trim()) {
-      alert("Please enter a meeting ID");
-      return;
-    }
-    
-    setJoinLoading(true);
-    try {
-      const res = await axios.post(`${BASE_URL}/api/meeting/join/${meetingId}`);
-      
-      if (res.data.success) {
-        navigate(`/meeting/${meetingId}`);
-      } else {
-        alert(res.data.message || "Meeting not found");
-      }
-    } catch (err) {
-      console.error(err);
-      if (err.response?.data?.message) {
-        alert(err.response.data.message);
-      } else {
-        alert("Failed to join meeting. Please check the ID and try again.");
-      }
-    } finally {
-      setJoinLoading(false);
-    }
-  };
-
-  // Native clipboard copy function
-  const copyToClipboard = async (text) => {
-    try {
-      // Modern clipboard API
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error("Failed to copy using modern API:", err);
-      
-      // Fallback for older browsers
-      try {
-        const textArea = document.createElement("textarea");
-        textArea.value = text;
-        textArea.style.position = "fixed";
-        textArea.style.left = "-999999px";
-        textArea.style.top = "-999999px";
-        document.body.appendChild(textArea);
-        textArea.focus();
-        textArea.select();
+    const joinMeeting = (e) => {
+        e.preventDefault();
+        const code = codeInput.trim().toUpperCase();
         
-        const successful = document.execCommand("copy");
-        if (successful) {
-          setCopied(true);
-          setTimeout(() => setCopied(false), 2000);
-        } else {
-          alert("Failed to copy. Please copy manually: " + text);
+        if (!code) {
+            alert("Please enter a meeting code");
+            return;
         }
         
-        document.body.removeChild(textArea);
-      } catch (fallbackErr) {
-        console.error("Fallback copy failed:", fallbackErr);
-        alert("Failed to copy to clipboard. Please copy manually: " + text);
-      }
-    }
-  };
+        setIsLoading(true);
+        navigate(`/meeting/${code}`);
+    };
 
-  const handleEnterKey = (e) => {
-    if (e.key === "Enter") {
-      joinMeeting();
-    }
-  };
+    const features = [
+        { icon: <Shield size={20} />, text: "End-to-end encrypted" },
+        { icon: <Users size={20} />, text: "Up to 50 participants" },
+        { icon: <Zap size={20} />, text: "HD video & audio" }
+    ];
 
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-indigo-600 to-purple-700 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md space-y-8">
-        {/* Header */}
-        <div className="text-center">
-          <div className="inline-block p-3 bg-indigo-100 rounded-full mb-4">
-            <span className="text-3xl">🎥</span>
-          </div>
-          <h1 className="text-3xl font-bold text-gray-800">Video Meeting</h1>
-          <p className="text-gray-600 mt-2">Connect with anyone, anywhere</p>
-        </div>
+    return (
+        <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 flex items-center justify-center p-4">
+            <div className="relative w-full max-w-lg">
+                {/* Header */}
+                <div className="text-center mb-10">
+                    <div className="inline-flex items-center justify-center p-3 bg-gradient-to-r from-blue-500 to-purple-600 rounded-2xl mb-4 shadow-lg">
+                        <Video className="w-8 h-8 text-white" />
+                    </div>
+                    <h1 className="text-4xl font-bold text-gray-900 mb-2 bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-purple-600">
+                        Instant Meetings
+                    </h1>
+                    <p className="text-gray-600 text-lg">
+                        Connect instantly with crystal-clear video
+                    </p>
+                </div>
 
-        {/* Create Meeting Section */}
-        <div className="space-y-4">
-          <button
-            onClick={createMeeting}
-            disabled={loading}
-            className={`w-full flex items-center justify-center gap-2 ${
-              loading 
-                ? "bg-indigo-400 cursor-not-allowed" 
-                : "bg-indigo-500 hover:bg-indigo-600"
-            } text-white py-3 rounded-lg font-medium transition-all duration-200 shadow-md hover:shadow-lg`}
-          >
-            {loading ? (
-              <>
-                <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                </svg>
-                Creating...
-              </>
-            ) : (
-              <>
-                <span>➕</span>
-                Create New Meeting
-              </>
+                {/* Main Card */}
+                <div className="bg-white/80 backdrop-blur-xl rounded-2xl shadow-2xl p-8 border border-white/20">
+                    {/* Create Meeting Button */}
+                    <button
+                        onClick={createMeeting}
+                        disabled={isLoading}
+                        className="w-full group bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white py-4 rounded-xl font-semibold transition-all duration-300 hover:shadow-xl disabled:opacity-70 disabled:cursor-not-allowed"
+                    >
+                        <div className="flex items-center justify-center gap-3">
+                            {isLoading ? (
+                                <div className="w-6 h-6 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                            ) : (
+                                <>
+                                    <PlusCircle className="w-5 h-5" />
+                                    Create New Meeting
+                                </>
+                            )}
+                        </div>
+                    </button>
+
+                    {/* Divider */}
+                    <div className="flex items-center my-8">
+                        <div className="flex-1 border-t border-gray-200"></div>
+                        <span className="px-4 text-gray-400 text-sm font-medium">OR</span>
+                        <div className="flex-1 border-t border-gray-200"></div>
+                    </div>
+
+                    {/* Join Meeting Form */}
+                    <form onSubmit={joinMeeting}>
+                        <div className="relative mb-6">
+                            <LogIn className="absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
+                            <input
+                                name="code"
+                                type="text"
+                                value={codeInput}
+                                onChange={(e) => setCodeInput(e.target.value.toUpperCase())}
+                                placeholder="Enter meeting code"
+                                className="w-full pl-12 pr-4 py-4 bg-gray-50 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all duration-300 text-lg font-medium tracking-wider placeholder-gray-400"
+                                maxLength="8"
+                                autoComplete="off"
+                            />
+                        </div>
+
+                        <button
+                            type="submit"
+                            disabled={isLoading}
+                            className="w-full bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 text-white py-4 rounded-xl font-semibold transition-all duration-300 hover:shadow-xl disabled:opacity-70 disabled:cursor-not-allowed"
+                        >
+                            <div className="flex items-center justify-center gap-3">
+                                {isLoading ? (
+                                    <div className="w-6 h-6 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                                ) : (
+                                    <>
+                                        <Users className="w-5 h-5" />
+                                        Join Meeting
+                                    </>
+                                )}
+                            </div>
+                        </button>
+                    </form>
+
+                    {/* Features */}
+                    <div className="mt-10 pt-8 border-t border-gray-100">
+                        <div className="grid grid-cols-3 gap-4">
+                            {features.map((feature, index) => (
+                                <div 
+                                    key={index}
+                                    className="text-center group"
+                                >
+                                    <div className="inline-flex items-center justify-center p-2 bg-gray-100 text-gray-600 rounded-lg group-hover:bg-blue-50 group-hover:text-blue-600 transition-colors duration-300 mb-2">
+                                        {feature.icon}
+                                    </div>
+                                    <p className="text-xs text-gray-600 font-medium group-hover:text-gray-800 transition-colors duration-300">
+                                        {feature.text}
+                                    </p>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+
+                    {/* Instructions */}
+                    <div className="mt-8 p-4 bg-gradient-to-r from-gray-50 to-blue-50 rounded-xl border border-blue-100">
+                        <div className="flex items-start gap-3">
+                            <Copy className="w-5 h-5 text-blue-500 flex-shrink-0 mt-0.5" />
+                            <div>
+                                <p className="text-sm text-gray-700">
+                                    <span className="font-semibold">Pro tip:</span> Share the meeting code with others to invite them to your meeting
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Footer */}
+                <div className="text-center mt-8">
+                    <p className="text-gray-500 text-sm">
+                        Secure • No sign-up required • Free to use
+                    </p>
+                </div>
+            </div>
+
+            {/* Generated Code Modal */}
+            {showCodeModal && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6">
+                        <div className="flex justify-between items-center mb-6">
+                            <h2 className="text-xl font-bold text-gray-900">
+                                Meeting Created Successfully!
+                            </h2>
+                            <button
+                                onClick={() => setShowCodeModal(false)}
+                                className="text-gray-400 hover:text-gray-600"
+                            >
+                                <X className="w-5 h-5" />
+                            </button>
+                        </div>
+
+                        <div className="mb-6">
+                            <p className="text-gray-600 mb-4">
+                                Share this code with participants to join the meeting:
+                            </p>
+                            
+                            <div className="bg-gradient-to-r from-blue-50 to-purple-50 border-2 border-blue-200 rounded-xl p-4 mb-4">
+                                <div className="text-center">
+                                    <p className="text-sm text-gray-500 mb-1">Meeting Code</p>
+                                    <p className="text-3xl font-bold tracking-wider text-gray-900 font-mono">
+                                        {generatedCode}
+                                    </p>
+                                </div>
+                            </div>
+
+                            <div className="flex flex-col gap-3">
+                                <button
+                                    onClick={copyToClipboard}
+                                    className="flex items-center justify-center gap-2 w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-lg font-semibold transition-all duration-300"
+                                >
+                                    {copied ? (
+                                        <>
+                                            <Check className="w-5 h-5" />
+                                            Copied to Clipboard!
+                                        </>
+                                    ) : (
+                                        <>
+                                            <Copy className="w-5 h-5" />
+                                            Copy Meeting Code
+                                        </>
+                                    )}
+                                </button>
+
+                                <button
+                                    onClick={startMeeting}
+                                    className="w-full bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 text-white py-3 rounded-lg font-semibold transition-all duration-300"
+                                >
+                                    Enter Meeting Room
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg">
+                            <p className="text-sm text-amber-800 text-center">
+                                <span className="font-semibold">Note:</span> Save this code to join later
+                            </p>
+                        </div>
+                    </div>
+                </div>
             )}
-          </button>
-
-          {generatedId && (
-            <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="text-gray-700 font-medium">Meeting ID:</span>
-                <button 
-                  onClick={() => copyToClipboard(generatedId)}
-                  className="text-sm bg-gray-200 hover:bg-gray-300 text-gray-800 px-3 py-1 rounded-lg transition-colors"
-                >
-                  {copied ? "Copied!" : "Copy"}
-                </button>
-              </div>
-              <div className="flex items-center justify-between">
-                <code className="font-mono text-lg font-bold text-indigo-600 bg-indigo-50 px-3 py-2 rounded-lg flex-1 text-center">
-                  {generatedId}
-                </code>
-              </div>
-              <p className="text-sm text-gray-500 text-center">
-                Share this ID with others to join your meeting
-              </p>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => {
-                    setMeetingId(generatedId);
-                    joinMeeting();
-                  }}
-                  className="flex-1 bg-green-500 hover:bg-green-600 text-white py-2 rounded-lg font-medium transition-colors"
-                >
-                  Join Now
-                </button>
-                <button
-                  onClick={() => {
-                    setMeetingId("");
-                    setGeneratedId("");
-                  }}
-                  className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
-                >
-                  Clear
-                </button>
-              </div>
-            </div>
-          )}
         </div>
+    );
+};
 
-        {/* Divider */}
-        <div className="relative">
-          <div className="absolute inset-0 flex items-center">
-            <div className="w-full border-t border-gray-300"></div>
-          </div>
-          <div className="relative flex justify-center text-sm">
-            <span className="px-4 bg-white text-gray-500">OR</span>
-          </div>
-        </div>
-
-        {/* Join Meeting Section */}
-        <div className="space-y-4">
-          <div className="space-y-2">
-            <label htmlFor="meetingId" className="block text-gray-700 font-medium">
-              Join Existing Meeting
-            </label>
-            <input
-              id="meetingId"
-              type="text"
-              placeholder="Enter meeting ID (e.g., aBcDeFgH)"
-              value={meetingId}
-              onChange={e => setMeetingId(e.target.value)}
-              onKeyDown={handleEnterKey}
-              className="w-full border border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
-            />
-          </div>
-          
-          <button
-            onClick={joinMeeting}
-            disabled={joinLoading || !meetingId.trim()}
-            className={`w-full flex items-center justify-center gap-2 ${
-              joinLoading || !meetingId.trim()
-                ? "bg-green-400 cursor-not-allowed"
-                : "bg-green-500 hover:bg-green-600"
-            } text-white py-3 rounded-lg font-medium transition-all duration-200 shadow-md hover:shadow-lg`}
-          >
-            {joinLoading ? (
-              <>
-                <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                </svg>
-                Joining...
-              </>
-            ) : (
-              <>
-                <span>🚀</span>
-                Join Meeting
-              </>
-            )}
-          </button>
-        </div>
-
-        {/* Features */}
-        <div className="grid grid-cols-3 gap-4 pt-6 border-t border-gray-200">
-          <div className="text-center">
-            <div className="inline-block p-2 bg-blue-100 rounded-lg mb-2">
-              <span className="text-xl">🔒</span>
-            </div>
-            <p className="text-sm text-gray-600">Secure</p>
-          </div>
-          <div className="text-center">
-            <div className="inline-block p-2 bg-green-100 rounded-lg mb-2">
-              <span className="text-xl">⚡</span>
-            </div>
-            <p className="text-sm text-gray-600">Fast</p>
-          </div>
-          <div className="text-center">
-            <div className="inline-block p-2 bg-purple-100 rounded-lg mb-2">
-              <span className="text-xl">🎯</span>
-            </div>
-            <p className="text-sm text-gray-600">HD Video</p>
-          </div>
-        </div>
-
-        {/* Footer Note */}
-        <p className="text-center text-sm text-gray-500 pt-4">
-          No account required • Free to use • Works in any browser
-        </p>
-      </div>
-    </div>
-  );
-}
+export default Home;
