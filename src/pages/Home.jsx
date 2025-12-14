@@ -12,6 +12,7 @@ import {
   Zap,
   X
 } from "lucide-react";
+const BASE_URL = import.meta.env.VITE_API_URL;
 
 const Home = () => {
     const navigate = useNavigate();
